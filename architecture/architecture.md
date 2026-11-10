@@ -1,6 +1,6 @@
 # BRI System Architecture
 
-Status: Proposed logical baseline; no technology or deployment option is approved by this document
+Status: Proposed logical baseline; local-MVP choices explicitly approved in the ADR register, production technology and deployment remain open
 
 ## 1. Context and guiding boundary
 
@@ -29,7 +29,7 @@ Knowledge Intelligence answers “what is known and supported by accessible sour
 
 Recommendation for evaluation: modular monolith with clear in-process module interfaces and separate worker processes for long-running ingestion/indexing. This avoids premature distributed systems while preserving later extraction boundaries. A service split is justified only by measured scaling, isolation, independent release or customer deployment requirements. This remains proposed.
 
-Technology baseline is deliberately not fixed here. Compare TypeScript full stack and a TypeScript experience plus separately contracted API/worker stack in the decision register. Similarly, PostgreSQL/object storage/vector technology are candidates, not approved infrastructure.
+Technology baseline for implementation is tracked in the decision register. PostgreSQL is approved by the user for the shared-tenant local MVP (AD-01/02); object storage and vector technology remain candidates, not approved infrastructure.
 
 ## 5. Primary data flows
 

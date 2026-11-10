@@ -31,7 +31,7 @@ Treat this as the working product baseline, not an assertion of legal ownership,
 
 ## Architecture position
 
-Proposed, not approved: API-first modular platform with distinct platform foundation, integration, knowledge, intelligence, analytics/reporting and experience capabilities. Keep Knowledge Intelligence and Decision Intelligence as separate bounded capabilities linked by provenance/evidence. Prefer a modular monolith and asynchronous processing boundaries until scale or isolation evidence justifies services. Technology selections remain open in `architecture/architecture-decisions.md`.
+Proposed, not approved: API-first modular platform with distinct platform foundation, integration, knowledge, intelligence, analytics/reporting and experience capabilities. Keep Knowledge Intelligence and Decision Intelligence as separate bounded capabilities linked by provenance/evidence. Prefer a modular monolith with asynchronous processing boundaries until scale or isolation evidence justifies services. PostgreSQL and the local shared-database tenancy baseline are approved for this MVP through AD-01/02; the broader web/API stack, production object storage and deployment remain in `architecture/architecture-decisions.md`.
 
 ## Status legend
 

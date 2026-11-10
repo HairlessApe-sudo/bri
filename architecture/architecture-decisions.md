@@ -9,11 +9,11 @@ User-provided baseline = direction in the initiating brief. Proposed = recommend
 ## Decision records
 
 ### AD-01 — System-of-record and persistence architecture
-- Status: Proposed direction; technology unresolved.
+- Status: Partially approved for local MVP on 2026-11-10: PostgreSQL as the shared relational database, consistent with the explicitly approved AD-02 topology. Other persistence decisions remain unresolved.
 - Problem/options: relational transactional store; document database; hybrid; event-sourced system. Relational provides constraints and reporting, document store flexible structures, event sourcing auditability but significant complexity.
-- Recommendation: relational system of record with immutable version/event records where needed; object storage for files; rebuildable search/analytics projections. PostgreSQL is a candidate, not approved.
+- Recommendation: PostgreSQL relational system of record for local MVP; immutable source/knowledge revisions where required; object storage for original files (provider still open); rebuildable search/analytics projections. Do not adopt event sourcing as a platform-wide pattern without a demonstrated need.
 - Consequences: explicit schema evolution and tenant constraints; avoid unrestricted JSON as core model.
-- Dependencies: tenancy, temporal model, deployment, workload and legal retention.
+- Still unresolved: exact schema/version semantics, local file storage adapter, production object store, migrations/rollback, backups, encryption/key ownership and analytic projections. Dependencies: temporal model, deployment, workload and legal retention.
 
 ### AD-02 — Tenant isolation topology
 - Status: Approved for the local MVP by explicit product-owner instruction on 2026-11-10; production deployment topology remains unresolved.

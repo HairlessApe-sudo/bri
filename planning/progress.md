@@ -17,7 +17,7 @@ Stage: 3 — platform foundation MVP, local synthetic implementation
 
 - User-provided product direction: recorded as baseline for this assignment.
 - Proposed architecture recommendations: documented; technology stack remains proposed.
-- Approved for the local MVP on 2026-11-10: AD-02 shared PostgreSQL tenant_id/composite-FK/forced-RLS plus service authorization; AD-06 RBAC with explicit resource/node scopes, default deny, no parent-to-child permission inheritance; AD-15 development-only synthetic identity adapter. Production identity and SaaS topology remain unresolved.
+- Approved for the local MVP on 2026-11-10: AD-01 PostgreSQL system-of-record selection (partial); AD-02 shared database with tenant_id/composite-FK/forced-RLS plus service authorization; AD-06 RBAC with explicit resource/node scopes, default deny, no parent-to-child permission inheritance; AD-15 development-only synthetic identity adapter. Production identity and SaaS topology remain unresolved.
 - Named product, security, privacy, legal and operations approvers: not supplied.
 - Numeric SLOs, workload, budget and schedule: unresolved.
 

@@ -4,7 +4,7 @@ Status: Conceptual design for discussion; not a physical schema, migration plan 
 
 ## 1. Storage roles
 
-Proposed: a transactional store for authoritative structured records; object storage for original files and large derived artefacts; separate/rebuildable full-text, vector and analytical indexes; durable task state for ingestion; minimised audit/event records. PostgreSQL, S3-compatible object storage and pgvector are candidates inherited only as options from prior reports, not approved decisions. See `architecture-decisions.md` AD-01/02/03.
+Proposed: PostgreSQL as the local-MVP transactional system of record (explicitly approved for shared tenant isolation in AD-01/02); local filesystem may be used only for development artifacts until an object-storage adapter is selected; separate/rebuildable full-text, vector and analytical indexes; durable task state for ingestion; minimised audit/event records. S3-compatible storage and pgvector remain proposed options, not approved production infrastructure. See `architecture-decisions.md` AD-01/02/03.
 
 ## 2. Entity groups
 
