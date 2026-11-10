@@ -1,0 +1,25 @@
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend (planned)
+node_modules/
+.next/
+out/
+
+# Local data, uploads, and databases
+storage/
+uploads/
+data/local/
+*.db
+*.sqlite
+*.sqlite3
