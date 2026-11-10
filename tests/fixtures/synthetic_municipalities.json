@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "synthetic_only": true,
+  "description": "Fictional municipal organisations and identities for local development; contains no real employee, resident, case, or policy data.",
+  "tenants": [
+    {
+      "tenant_id": "tenant-synth-noordlicht",
+      "display_name": "Fictionele Gemeente Noordlicht",
+      "sector": "municipality",
+      "org_nodes": [
+        {"node_id": "org-noordlicht-root", "node_type": "municipality", "display_name": "Gemeente Noordlicht", "parent_id": null},
+        {"node_id": "org-noordlicht-policy", "node_type": "department", "display_name": "Beleid en Bestuur", "parent_id": "org-noordlicht-root"},
+        {"node_id": "org-noordlicht-policy-team", "node_type": "team", "display_name": "Beleidsadvies", "parent_id": "org-noordlicht-policy"},
+        {"node_id": "org-noordlicht-information", "node_type": "functional_group", "display_name": "Informatiebeheer", "parent_id": "org-noordlicht-root"},
+        {"node_id": "org-noordlicht-public", "node_type": "department", "display_name": "Publieke Dienstverlening", "parent_id": "org-noordlicht-root"},
+        {"node_id": "org-noordlicht-public-team", "node_type": "team", "display_name": "Dienstverleningsbeleid", "parent_id": "org-noordlicht-public"}
+      ],
+      "relationships": [
+        {"relationship_id": "rel-noordlicht-collab", "from_node_id": "org-noordlicht-information", "to_node_id": "org-noordlicht-policy-team", "relationship_type": "supports", "grants_access": false}
+      ],
+      "roles": [
+        {"role_id": "role-noordlicht-admin", "display_name": "Synthetic Organisation Administrator", "permissions": ["organisation:manage"]},
+        {"role_id": "role-noordlicht-steward", "display_name": "Synthetic Knowledge Steward", "permissions": ["knowledge:read", "knowledge:review"]},
+        {"role_id": "role-noordlicht-reader", "display_name": "Synthetic Policy Reader", "permissions": ["knowledge:read"]}
+      ],
+      "users": [
+        {"user_id": "user-noordlicht-admin", "display_name": "Synthetic Administrator", "role_assignments": [{"role_id": "role-noordlicht-admin", "scope_node_id": "org-noordlicht-root"}]},
+        {"user_id": "user-noordlicht-steward", "display_name": "Synthetic Knowledge Steward", "role_assignments": [{"role_id": "role-noordlicht-steward", "scope_node_id": "org-noordlicht-information"}]},
+        {"user_id": "user-noordlicht-reader", "display_name": "Synthetic Policy Reader", "role_assignments": [{"role_id": "role-noordlicht-reader", "scope_node_id": "org-noordlicht-policy-team"}]}
+      ]
+    },
+    {
+      "tenant_id": "tenant-synth-zilvermeer",
+      "display_name": "Fictionele Gemeente Zilvermeer",
+      "sector": "municipality",
+      "org_nodes": [
+        {"node_id": "org-zilvermeer-root", "node_type": "municipality", "display_name": "Gemeente Zilvermeer", "parent_id": null},
+        {"node_id": "org-zilvermeer-culture", "node_type": "department", "display_name": "Cultuur en Samenleving", "parent_id": "org-zilvermeer-root"},
+        {"node_id": "org-zilvermeer-culture-team", "node_type": "team", "display_name": "Kunst en Erfgoed", "parent_id": "org-zilvermeer-culture"},
+        {"node_id": "org-zilvermeer-finance", "node_type": "department", "display_name": "Financiën en Bedrijfsvoering", "parent_id": "org-zilvermeer-root"},
+        {"node_id": "org-zilvermeer-finance-team", "node_type": "team", "display_name": "Informatievoorziening", "parent_id": "org-zilvermeer-finance"}
+      ],
+      "relationships": [],
+      "roles": [
+        {"role_id": "role-zilvermeer-admin", "display_name": "Synthetic Organisation Administrator", "permissions": ["organisation:manage"]},
+        {"role_id": "role-zilvermeer-steward", "display_name": "Synthetic Knowledge Steward", "permissions": ["knowledge:read", "knowledge:review"]},
+        {"role_id": "role-zilvermeer-reader", "display_name": "Synthetic Policy Reader", "permissions": ["knowledge:read"]}
+      ],
+      "users": [
+        {"user_id": "user-zilvermeer-admin", "display_name": "Synthetic Administrator", "role_assignments": [{"role_id": "role-zilvermeer-admin", "scope_node_id": "org-zilvermeer-root"}]},
+        {"user_id": "user-zilvermeer-steward", "display_name": "Synthetic Knowledge Steward", "role_assignments": [{"role_id": "role-zilvermeer-steward", "scope_node_id": "org-zilvermeer-finance-team"}]},
+        {"user_id": "user-zilvermeer-reader", "display_name": "Synthetic Policy Reader", "role_assignments": [{"role_id": "role-zilvermeer-reader", "scope_node_id": "org-zilvermeer-culture-team"}]}
+      ]
+    }
+  ]
+}

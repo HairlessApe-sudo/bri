@@ -20,7 +20,7 @@ This workspace is a new clean documentation baseline. It is not a continuation, 
 
 ## Local development (current implemented slice)
 
-The source currently contains pure CSV extraction and an exact-scope authorization policy primitive; it is not yet a running web application. With Python 3.14+ available:
+The source currently contains bounded CSV extraction, a fail-closed exact-tenant/action/scope policy primitive, and deterministic evidence-first Knowledge Intelligence over already-validated records. A two-tenant fictional municipal seed fixture is included for tests. This is not yet a running web application, database-backed workflow, or authenticated API. With Python 3.14+ available:
 
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
