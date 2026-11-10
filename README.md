@@ -20,13 +20,15 @@ This workspace is a new clean documentation baseline. It is not a continuation, 
 
 ## Local development (current implemented slice)
 
-The source currently contains bounded CSV extraction, a fail-closed exact-tenant/action/scope policy primitive, and deterministic evidence-first Knowledge Intelligence over already-validated records. A two-tenant fictional municipal seed fixture is included for tests. This is not yet a running web application, database-backed workflow, or authenticated API. With Python 3.14+ available:
+The source currently contains bounded CSV, selectable-text PDF and XLSX extraction; a fail-closed exact-tenant/action/scope policy primitive; deterministic evidence-first Knowledge Intelligence over already-validated records; and a two-tenant fictional municipal test fixture. It is not yet a running web application, database-backed workflow, or authenticated API. On the verified Python 3.14.9 environment:
 
 ```sh
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The full API/UI/database startup workflow is not yet available. PostgreSQL-backed integration is blocked until Docker Desktop WSL integration is enabled or an approved local PostgreSQL installation is provided. No real-data or external-provider configuration is supported.
+The full API/UI/database startup workflow is not yet available. PostgreSQL-backed integration is blocked until Docker Desktop WSL integration is enabled. PDF extraction is text-only; OCR is not implemented. XLSX formulas are preserved as text and not executed. No real-data or external-provider configuration is supported.
 
 ## Document map
 

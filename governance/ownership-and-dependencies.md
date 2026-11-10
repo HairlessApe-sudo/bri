@@ -33,14 +33,27 @@ Until resolved, do not make legal guarantees or import disputed materials.
 
 These examples are categories/options, not selected vendors or installed dependencies.
 
-## 3. Data rights and lifecycle questions
+## 3. Verified local parser dependencies
+
+These packages are installed only in the project-local `.venv` for synthetic local development. Versions are pinned in `requirements.txt`; this is not a complete production dependency approval or legal clearance.
+
+| Package | Version | License reported by package metadata | Use / control |
+|---|---:|---|---|
+| pypdf | 7.0.1 | BSD-3-Clause | Text-only PDF extraction; byte/page bounds; no OCR or attachment/link execution. |
+| openpyxl | 3.1.5 | MIT | Read-only XLSX extraction; formulas retained as strings, not evaluated. |
+| defusedxml | 0.7.1 | PSF License | Required XML hardening for openpyxl; runtime verified `openpyxl.xml.DEFUSEDXML == True`. |
+| et-xmlfile | 2.0.0 | MIT | openpyxl runtime dependency. |
+
+Package metadata is an initial inventory, not legal approval. Preserve notices and recheck licenses, versions, security advisories and transitive dependencies before release. No FastAPI, frontend, database driver, AI provider or production storage dependency has been installed.
+
+## 4. Data rights and lifecycle questions
 
 For each source and customer contract, define who owns source data, derived/extracted content, validated knowledge, annotations, generated outputs, metrics, audit metadata, embeddings and backups. Define permitted purposes, access, correction, export, deletion, legal hold, model training prohibition/permission, portability on termination, and responsibility for source-system synchronization. These are legal/product decisions, not inferred from technical storage.
 
-## 4. Approval gates
+## 5. Approval gates
 
-Before code dependencies: legal/license inventory and architecture approval. Before customer data: data-processing terms, classification, DPIA/privacy/security review as applicable, retention/deletion and incident responsibilities. Before external model use: provider and data-flow approval for the specific deployment and data classes. Before connector release: API terms, security review, least-privilege scope and revocation/deletion behavior. Before launch: ownership, notices, support and vulnerability-response process.
+Before adopting production/release dependencies, complete the legal/license inventory and architecture review. Before customer data: data-processing terms, classification, DPIA/privacy/security review as applicable, retention/deletion and incident responsibilities. Before external model use: provider and data-flow approval for the specific deployment and data classes. Before connector release: API terms, security review, least-privilege scope and revocation/deletion behavior. Before launch: ownership, notices, support and vulnerability-response process.
 
-## 5. Open owners
+## 6. Open owners
 
 Accountable legal reviewer, product owner, security owner, data-protection/privacy lead, deployment operator, connector owner and AI/provider approver are not named in the initiating brief. Assign them before relevant gates.

@@ -10,8 +10,8 @@ Stage: 3 — platform foundation MVP, local synthetic implementation
 - This assignment did not access prior historical reports, source code, municipal implementations, production systems, credentials or case data. Existing BRI architecture documents were read as current project inputs; no disputed historical materials were reused.
 - All 21 foundation documents were read in full before implementation; the enumerated project files and initial source structure were inspected.
 - Assignment 01 explicitly authorizes local implementation using synthetic data. No production deployment, external AI provider, real customer data or production system is authorized.
-- TDD slices added: bounded UTF-8 CSV extraction with row-line provenance and exact-byte SHA-256; fail-closed exact-tenant/action/scope policy primitive; deterministic evidence-first question answering over validated records with citations, conflict detection and abstention. Two fictional municipal tenants with configurable units, teams, relationships, users, roles and exact scopes are included as test fixtures. Twenty-one automated tests pass.
-- No database, migration, external integration, or real municipal/customer data has been created or used. Docker Desktop WSL integration is unavailable; PostgreSQL is not installed.
+- TDD slices added: bounded UTF-8 CSV extraction; selectable-text PDF extraction; bounded XLSX extraction with XML hardening, no formula evaluation, sheet visibility and row provenance; fail-closed exact-tenant/action/scope policy; deterministic evidence-first question answering with citations, conflict detection and abstention. Two fictional municipal tenants with configurable units, teams, relationships, users, roles and scopes are test fixtures. Thirty-one automated tests pass in the project `.venv`.
+- No database, migration, external integration, or real municipal/customer data has been created or used. Docker Desktop WSL integration is unavailable; PostgreSQL is not installed. Local parser dependencies are pinned and their license metadata recorded.
 
 ## Approval status
 
@@ -29,13 +29,14 @@ See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependenci
 
 | Stage | State | Evidence / note |
 |---|---|---|
-| Review permitted reference reports | Complete | Prior assessment reports only; reference-only use. |
+| Apply historical-material restriction | Complete | No previous reports, source code, municipal implementations, or case data accessed in this assignment. |
 | Synthesize new product direction and clean boundary | Complete | Product and governance documents. |
 | Read existing documentation and inspect workspace | Complete | All 21 Markdown files read; `src/` was empty; no existing code, tests or Git metadata were present. |
-| Verify Git remote/history | Complete with setup | Initialized local Git metadata on `main`, configured specified `origin`; remote returned no refs. First local root commit is `660adcb`; author identity was supplied by the user and set locally. |
+| Verify Git remote/history | Complete with setup | Initialized local Git metadata on `main`, configured specified `origin`; remote returned no refs and had no prior history. Local commits are recorded in `git log`; author identity supplied by user. |
 | Technology recommendation | Proposed | AD-04 stack recommendation remains unapproved; AD-02/06 and local-only AD-15 were explicitly approved for this MVP. |
 | CSV extraction and access-policy tracer slices | Complete | Test-first; covered by current test suite. |
 | Deterministic Knowledge Intelligence + municipal fixtures | Complete as domain slice | 21 tests pass across extraction, policy, citations, abstention, conflict, and two-tenant seed structure; no UI/API/database integration yet. |
+| PDF/XLSX extraction and local dependency setup | Complete as parser slice | 31-test suite passes; parser libraries pinned/licensed; PDF text-only, no OCR; XLSX formulas not executed. |
 | PostgreSQL-backed application/ingestion vertical slice | In progress / blocked on environment | User approved local tenant/access decisions and selected Docker WSL integration; PostgreSQL runtime is not yet available. |
 
 ## Next decisions / questions
@@ -47,4 +48,4 @@ See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependenci
 
 ## Change log
 
-- 2026-11-10: Assignment 01 began; local Git repository configured to the specified remote and approved author identity; user approved local tenant-isolation, access-scope and dev-identity decisions. CSV, policy, deterministic knowledge-answering and synthetic municipal fixture slices pass 21 tests. PostgreSQL-backed work awaits Docker WSL integration.
+- 2026-11-10: Assignment 01 began; local Git repository configured to the specified remote and approved author identity; user approved local tenant-isolation, access-scope and dev-identity decisions. CSV, PDF, XLSX, policy, deterministic knowledge-answering and synthetic municipal fixture slices pass 31 tests. PostgreSQL-backed work awaits Docker WSL integration.
