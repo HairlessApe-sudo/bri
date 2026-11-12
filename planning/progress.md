@@ -10,8 +10,8 @@ Stage: 3 — platform foundation MVP, synthetic development implementation
 - This assignment did not access prior historical reports, source code, municipal implementations, production systems, credentials or case data. Existing BRI architecture documents were read as current project inputs; no disputed historical materials were reused.
 - All 21 foundation documents were read in full before implementation; the enumerated project files and initial source structure were inspected.
 - Assignment 01 explicitly authorizes local implementation using synthetic data. No production deployment, external AI provider, real customer data or production system is authorized.
-- TDD slices added: bounded UTF-8 CSV extraction; selectable-text PDF extraction; bounded XLSX extraction with XML hardening, no formula evaluation, sheet visibility and row provenance; fail-closed exact-tenant/action/scope policy; deterministic evidence-first question answering with citations, conflict detection and abstention. Two fictional municipal tenants with configurable units, teams, relationships, users, roles and scopes are test fixtures. Thirty-one automated tests pass in the project `.venv`.
-- No database, migration, external integration, or real municipal/customer data has been created or used. Docker Desktop WSL integration is unavailable; PostgreSQL is not installed. Local parser dependencies are pinned and their license metadata recorded.
+- TDD slices added: bounded UTF-8 CSV extraction; selectable-text PDF extraction; bounded XLSX extraction with XML hardening, no formula evaluation, sheet visibility and row provenance; fail-closed exact-tenant/action/scope policy; deterministic evidence-first question answering with citations, conflict detection and abstention. Two fictional municipal tenants with configurable units, teams, relationships, users, roles and scopes are test fixtures. The 31 pre-existing tests, seven live database integration tests, 11 migration-checksum/baseline tests, seven endpoint-validation tests and eight role/ledger tests pass (64 total in the combined run).
+- Assignment 02 implemented a development-only Supabase PostgreSQL tenant foundation in schema `bri`, using the existing synthetic municipality fixture only in rolled-back integration-test transactions. No production or previous BRI project was accessed; no real municipal/customer data was used.
 
 ## Approval status
 
@@ -24,7 +24,7 @@ Stage: 3 — platform foundation MVP, synthetic development implementation
 
 ## Decision and risk focus
 
-See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependencies. Highest priority before any implementation or real data: tenant isolation/access semantics; source/version/provenance and temporal design; data classification/model policy; retention/deletion; legal clean-room/ownership review; identity/deployment profile; named accountable owners.
+See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependencies. Highest priority before any implementation or real data: tenant isolation/access semantics; source/version/provenance and temporal design; data classification/model policy; retention/deletion; legal clean-room/ownership review; identity/deployment profile; named accountable owners. The verified Supabase baseline also grants `PUBLIC` TEMP and `pg_catalog.lo_create` to the application role; service schemas and non-BRI application objects remain inaccessible. Development role connection limits (10/2) bound concurrent sessions but do not remove per-session temporary/large-object disk-use risk. Those provider/global defaults were left untouched, so the project remains synthetic-development-only pending a separate production security decision.
 
 ## Work log
 
@@ -36,18 +36,18 @@ See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependenci
 | Verify Git remote/history | Complete with setup | Initialized local Git metadata on `main`, configured specified `origin`; remote returned no refs and had no prior history. Local commits are recorded in `git log`; author identity supplied by user. |
 | Technology recommendation | Proposed | AD-04 stack recommendation remains unapproved; AD-02/06 and local-only AD-15 were explicitly approved for this MVP. |
 | CSV extraction and access-policy tracer slices | Complete | Test-first; covered by current test suite. |
-| Deterministic Knowledge Intelligence + municipal fixtures | Complete as domain slice | 21 tests pass across extraction, policy, citations, abstention, conflict, and two-tenant seed structure; no UI/API/database integration yet. |
+| Deterministic Knowledge Intelligence + municipal fixtures | Complete as domain slice | 21 tests pass across extraction, policy, citations, abstention, conflict, and two-tenant seed structure; database-backed verification added in Assignment 02, no UI/API integration yet. |
 | PDF/XLSX extraction and local dependency setup | Complete as parser slice | 31-test suite passes; parser libraries pinned/licensed; PDF text-only, no OCR; XLSX formulas not executed. |
-| Supabase PostgreSQL foundation | Blocked before connection | Safe preflight confirmed `BRI_ENVIRONMENT` is development and the Supabase API URL has a project reference, but both PostgreSQL URL host formats do not expose a safely comparable project reference. No database connection, role provisioning, migration or data operation was attempted. Require connection URLs whose project identity can be matched to `SUPABASE_URL`, or an equivalent independently verifiable project identifier, then resume. |
+| Supabase PostgreSQL foundation | Complete for development MVP | Verified the API and exact configured Session Pooler hostname/reference before any write. Read-only connections succeeded for both restricted role URLs after provisioning. Added `bri_app` and `bri_migrator` with restricted attributes and development connection limits (10/2; neither superuser or BYPASSRLS, and neither is a member of other roles); applied three migrations with SHA-256 ledger verification; all seven live database integration tests pass. The combined suite passes 64 tests including 11 checksum/baseline, seven target-validation and eight role/ledger tests. No Docker used. |
 
 ## Next decisions / questions
 
-1. Supply PostgreSQL connection URLs with a safely matchable Supabase project reference (or an independently verifiable project identifier) before any database connection or modification.
-2. Decide production identity federation, policy/role catalogue and detailed organisational hierarchy semantics before building production auth or schema.
-3. Define the approved data classification/provider policy before any external AI provider is configured; default to deterministic mock.
-4. Confirm accountable product/security/privacy/legal/operations owners and future SaaS/private profiles.
+1. Decide production identity federation, policy/role catalogue and detailed organisational hierarchy semantics before building production auth or schema.
+2. Define the approved data classification/provider policy before any external AI provider is configured; default to deterministic mock.
+3. Confirm accountable product/security/privacy/legal/operations owners and future SaaS/private profiles.
 
 ## Change log
 
 - 2026-11-10: Assignment 01 began; local Git repository configured to the specified remote and approved author identity; user approved local tenant-isolation, access-scope and dev-identity decisions. CSV, PDF, XLSX, policy, deterministic knowledge-answering and synthetic municipal fixture slices pass 31 tests. PostgreSQL-backed work awaits Docker WSL integration.
 - 2026-11-12: Product owner confirmed development-only AD-02 details and governance precedence. Updated AD-02, security model, data model and project context to align. Assignment 02 preflight stopped before any database connection or modification because the PostgreSQL connection host formats do not expose a project reference that can be compared with the configured Supabase API project reference.
+- 2026-11-12: Owner supplied the expected development project reference and corrected the Session Pooler configuration. Verified project reference equality before read-only connectivity checks; provisioned restricted roles, applied three migrations with checksum enforcement and passed seven live tenant/RLS/role/schema-access integration tests plus 11 checksum/baseline, seven target-validation and eight role/ledger unit tests (64 total) using transaction-rolled-back synthetic fixtures. Database setup and test instructions documented. Previous project and production remain untouched.

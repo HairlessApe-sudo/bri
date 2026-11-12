@@ -1,6 +1,6 @@
 # BRI Logical Data Model
 
-Status: Conceptual design. Approved AD-02 authorizes development-MVP physical schema/migrations for the tenant-isolation foundation only; remaining domain, temporal, retention and production decisions remain unresolved. See `architecture-decisions.md` for governance precedence.
+Status: Conceptual design. Approved AD-02 authorizes the implemented development-MVP tenant-isolation foundation in schema `bri` (see `db/migrations/` and `db/README.md`); remaining domain, temporal, retention and production decisions remain unresolved. See `architecture-decisions.md` for governance precedence.
 
 ## 1. Storage roles
 

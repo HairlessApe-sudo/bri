@@ -20,7 +20,7 @@ This workspace is a new clean documentation baseline. It is not a continuation, 
 
 ## Local development (current implemented slice)
 
-The source currently contains bounded CSV, selectable-text PDF and XLSX extraction; a fail-closed exact-tenant/action/scope policy primitive; deterministic evidence-first Knowledge Intelligence over already-validated records; and a two-tenant fictional municipal test fixture. It is not yet a running web application, database-backed workflow, or authenticated API. On the verified Python 3.14.9 environment:
+The source currently contains bounded CSV, selectable-text PDF and XLSX extraction; a fail-closed exact-tenant/action/scope policy primitive; deterministic evidence-first Knowledge Intelligence over already-validated records; a two-tenant fictional municipal test fixture; and a development-only Supabase PostgreSQL tenant foundation with composite tenant references and forced RLS. It is not yet a running web application or authenticated API. On the verified Python 3.14.9 environment:
 
 ```sh
 python3 -m venv .venv
@@ -28,7 +28,13 @@ python3 -m venv .venv
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The full API/UI/database startup workflow is not yet available. PostgreSQL-backed integration is blocked until Docker Desktop WSL integration is enabled. PDF extraction is text-only; OCR is not implemented. XLSX formulas are preserved as text and not executed. No real-data or external-provider configuration is supported.
+For the development database, follow `db/README.md`; Docker is not required. Database integration tests are opt-in and use transactions that roll back all fixture writes:
+
+```sh
+PYTHONPATH=src BRI_RUN_DB_TESTS=1 .venv/bin/python -m unittest discover -s tests -p 'test_database_rls.py' -v
+```
+
+The database foundation is development-only and uses synthetic data. PDF extraction is text-only; OCR is not implemented. XLSX formulas are preserved as text and not executed. No production database, real data or external AI provider is supported.
 
 ## Document map
 
@@ -40,6 +46,7 @@ The full API/UI/database startup workflow is not yet available. PostgreSQL-backe
 | Architecture | `architecture/architecture.md` | System context, components, boundaries and flows |
 | Architecture | `architecture/domain-model.md` | Platform and domain concepts and bounded contexts |
 | Architecture | `architecture/data-model.md` | Logical entities, invariants and storage responsibilities |
+| Database | `db/README.md` | Supabase development setup, role usage, migrations and safe integration tests |
 | Architecture | `architecture/security-model.md` | Identity, tenancy, authorization, privacy and threat boundaries |
 | Architecture | `architecture/integration-architecture.md` | Inbound/outbound APIs, connectors and integration controls |
 | Architecture | `architecture/knowledge-architecture.md` | Ingestion, validation, provenance, lifecycle and retrieval |
