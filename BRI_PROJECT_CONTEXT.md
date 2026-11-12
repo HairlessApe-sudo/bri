@@ -6,8 +6,8 @@
 - Owner: Black Raven Studios (BRS), subject to applicable rights and contracts.
 - Product direction: organisation-independent intelligence infrastructure, not a single-organisation case application.
 - Workspace: this new project directory, separate from the previous `agent-pilot/BRI/` workspace.
-- Stage: Assignment 02 Supabase PostgreSQL development foundation completed; synthetic data only.
-- Implementation: Assignment 02 authorizes the new development Supabase project within this workspace using synthetic data only; production systems, real customer data, external providers, and all other external infrastructure remain out of scope.
+- Stage: Assignment 03 loopback FastAPI foundation implemented; synthetic data only.
+- Implementation: Assignment 03 authorizes a local development API over the Assignment 02 database/Python foundation. Production systems, real customer data, external providers, and all other external infrastructure remain out of scope.
 - Data: synthetic examples only.
 
 ## Product definition

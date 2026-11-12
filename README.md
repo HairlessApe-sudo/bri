@@ -1,7 +1,7 @@
 # BRI — Organisational Intelligence Infrastructure
 
-Status: New independent product; Assignment 01 local synthetic implementation in progress
-Last updated: 2026-11-10
+Status: New independent product; local synthetic implementation through Assignment 03 API foundation
+Last updated: 2026-11-12
 
 ## Identity
 
@@ -13,14 +13,14 @@ This workspace is a new clean documentation baseline. It is not a continuation, 
 
 - Product direction: taken from the initiating project brief; not silently expanded.
 - Architecture: proposed; decision register is in `architecture/architecture-decisions.md`.
-- Implementation: Assignment 01 authorizes local synthetic development; the first tested code slices exist. No production services or real data are involved.
+- Implementation: Assignment 03 adds a loopback-only, development API with server-mapped synthetic identities and read-only endpoints. No production services or real data are involved.
 - Data: synthetic examples only.
 - Independent boundary: see `governance/independent-development-boundary.md`.
 - Legal ownership/licensing questions: unresolved; see `governance/ownership-and-dependencies.md`.
 
 ## Local development (current implemented slice)
 
-The source currently contains bounded CSV, selectable-text PDF and XLSX extraction; a fail-closed exact-tenant/action/scope policy primitive; deterministic evidence-first Knowledge Intelligence over already-validated records; a two-tenant fictional municipal test fixture; and a development-only Supabase PostgreSQL tenant foundation with composite tenant references and forced RLS. It is not yet a running web application or authenticated API. On the verified Python 3.14.9 environment:
+The source contains bounded CSV, selectable-text PDF and XLSX extraction; a fail-closed exact-tenant/action/scope policy primitive; deterministic evidence-first Knowledge Intelligence; synthetic municipality fixtures; a Supabase PostgreSQL tenant foundation with composite tenant references and forced RLS; and a loopback-only FastAPI development surface. Organization routes read authorized RLS-scoped database structures when present and use the synthetic fixture on the clean project; knowledge records remain in-memory synthetic examples because no knowledge table is approved or migrated. The development identity header is not production authentication. See `api/README.md`. On the verified Python 3.14.9 environment:
 
 ```sh
 python3 -m venv .venv
@@ -47,6 +47,7 @@ The database foundation is development-only and uses synthetic data. PDF extract
 | Architecture | `architecture/domain-model.md` | Platform and domain concepts and bounded contexts |
 | Architecture | `architecture/data-model.md` | Logical entities, invariants and storage responsibilities |
 | Database | `db/README.md` | Supabase development setup, role usage, migrations and safe integration tests |
+| API | `api/README.md` | Loopback FastAPI startup, synthetic identity and endpoint boundaries |
 | Architecture | `architecture/security-model.md` | Identity, tenancy, authorization, privacy and threat boundaries |
 | Architecture | `architecture/integration-architecture.md` | Inbound/outbound APIs, connectors and integration controls |
 | Architecture | `architecture/knowledge-architecture.md` | Ingestion, validation, provenance, lifecycle and retrieval |

@@ -20,11 +20,13 @@
       ],
       "roles": [
         {"role_id": "role-noordlicht-admin", "display_name": "Synthetic Organisation Administrator", "permissions": ["organisation:manage"]},
+        {"role_id": "role-noordlicht-org-reader", "display_name": "Synthetic Organisation Structure Reader", "permissions": ["organisation:read"]},
         {"role_id": "role-noordlicht-steward", "display_name": "Synthetic Knowledge Steward", "permissions": ["knowledge:read", "knowledge:review"]},
         {"role_id": "role-noordlicht-reader", "display_name": "Synthetic Policy Reader", "permissions": ["knowledge:read"]}
       ],
       "users": [
         {"user_id": "user-noordlicht-admin", "display_name": "Synthetic Administrator", "role_assignments": [{"role_id": "role-noordlicht-admin", "scope_node_id": "org-noordlicht-root"}]},
+        {"user_id": "user-noordlicht-org-reader", "display_name": "Synthetic Organisation Structure Reader", "role_assignments": [{"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-root"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-policy"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-policy-team"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-information"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-public"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-public-team"}]},
         {"user_id": "user-noordlicht-steward", "display_name": "Synthetic Knowledge Steward", "role_assignments": [{"role_id": "role-noordlicht-steward", "scope_node_id": "org-noordlicht-information"}]},
         {"user_id": "user-noordlicht-reader", "display_name": "Synthetic Policy Reader", "role_assignments": [{"role_id": "role-noordlicht-reader", "scope_node_id": "org-noordlicht-policy-team"}]}
       ]
@@ -43,11 +45,13 @@
       "relationships": [],
       "roles": [
         {"role_id": "role-zilvermeer-admin", "display_name": "Synthetic Organisation Administrator", "permissions": ["organisation:manage"]},
+        {"role_id": "role-zilvermeer-org-reader", "display_name": "Synthetic Organisation Structure Reader", "permissions": ["organisation:read"]},
         {"role_id": "role-zilvermeer-steward", "display_name": "Synthetic Knowledge Steward", "permissions": ["knowledge:read", "knowledge:review"]},
         {"role_id": "role-zilvermeer-reader", "display_name": "Synthetic Policy Reader", "permissions": ["knowledge:read"]}
       ],
       "users": [
         {"user_id": "user-zilvermeer-admin", "display_name": "Synthetic Administrator", "role_assignments": [{"role_id": "role-zilvermeer-admin", "scope_node_id": "org-zilvermeer-root"}]},
+        {"user_id": "user-zilvermeer-org-reader", "display_name": "Synthetic Organisation Structure Reader", "role_assignments": [{"role_id": "role-zilvermeer-org-reader", "scope_node_id": "org-zilvermeer-root"}, {"role_id": "role-zilvermeer-org-reader", "scope_node_id": "org-zilvermeer-culture"}, {"role_id": "role-zilvermeer-org-reader", "scope_node_id": "org-zilvermeer-culture-team"}, {"role_id": "role-zilvermeer-org-reader", "scope_node_id": "org-zilvermeer-finance"}, {"role_id": "role-zilvermeer-org-reader", "scope_node_id": "org-zilvermeer-finance-team"}]},
         {"user_id": "user-zilvermeer-steward", "display_name": "Synthetic Knowledge Steward", "role_assignments": [{"role_id": "role-zilvermeer-steward", "scope_node_id": "org-zilvermeer-finance-team"}]},
         {"user_id": "user-zilvermeer-reader", "display_name": "Synthetic Policy Reader", "role_assignments": [{"role_id": "role-zilvermeer-reader", "scope_node_id": "org-zilvermeer-culture-team"}]}
       ]
