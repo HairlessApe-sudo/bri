@@ -35,11 +35,11 @@ SELECT set_config('bri.tenant_id', $1, true);
 
 Do not accept tenant context as authority from an untrusted client. The custom PostgreSQL setting is caller-settable by a holder of the application database credential; RLS here is a tenant filter/defense-in-depth boundary, not authentication or a replacement for application authorization. Keep `DATABASE_URL` exclusively on the trusted server. Apply explicit scope authorization in application logic; do not infer scope inheritance from organizational hierarchy or relationship edges. All database requests/tasks must execute in transactions that establish context and clear it automatically at transaction end.
 
-`synthetic_principals` is explicitly constrained to synthetic records. The existing fictional Noordlicht/Zilvermeer fixture is loaded inside integration-test transactions, never as persistent seed data.
+`synthetic_principals` is explicitly constrained to synthetic records. Database/API startup never seeds fixture data. Integration tests load fixtures in rollback-only transactions; the separate `scripts.db.seed_synthetic_data --apply` command is the explicit, idempotent path for persisting the two fictional municipalities, their synthetic identities/permissions and synthetic source/version/extraction rows. It requires the approved development target and `bri_app`; it verifies existing keys and fails on differing values rather than overwriting them.
 
 ## Migrations and tests
 
-Migrations are ordered SQL files under `db/migrations/` and recorded with SHA-256 checksums in `bri.schema_migrations`. Applied migration files are immutable; the runner rejects checksum mismatches. The one-time legacy upgrade accepts only the pinned hashes for `0001_tenant_foundation` and `0002_immediate_parent_fk`; changed or unknown legacy files fail closed rather than being re-baselined. For migrations after the initial legacy files, include only schema/data statements: the runner wraps each new file and its ledger/checksum entry in one transaction. Do not add `BEGIN`/`COMMIT` or manual ledger inserts to new migration files. Apply them with `bri_migrator`; do not run as the application role or privileged bootstrap role. The current foundation is intentionally limited to tenants, synthetic principals, organization nodes/relationships, application roles/permissions and scoped role assignments. It does not implement a frontend, provider integration, or production identity.
+Migrations are ordered SQL files under `db/migrations/` and recorded with SHA-256 checksums in `bri.schema_migrations`. Applied migration files are immutable; the runner rejects checksum mismatches. The one-time legacy upgrade accepts only the pinned hashes for `0001_tenant_foundation` and `0002_immediate_parent_fk`; changed or unknown legacy files fail closed rather than being re-baselined. For migrations after the initial legacy files, include only schema/data statements: the runner wraps each new file and its ledger/checksum entry in one transaction. Do not add `BEGIN`/`COMMIT` or manual ledger inserts to new migration files. Apply them with `bri_migrator`; do not run as the application role or privileged bootstrap role. Migration `0004_knowledge_lifecycle.sql` adds tenant-scoped source records/versions/extractions, proposals, validation decisions and approved knowledge. Migration `0005_source_version_provenance_fk.sql` adds a composite FK from each extraction's existing tenant/source/version/hash/location tuple to the exact source-version row, preventing provenance mismatch without dropping or rewriting existing columns. All six tables use forced RLS; `bri_app` receives only SELECT and INSERT on them so validation decisions are append-only. Validated rows have composite FKs to an `approved` decision for the same tenant/proposal. The application performs permission/scope checks and verifies extracted-content hashes. This remains a synthetic-development milestone, not production identity or deployment.
 
 Run the complete unit suite:
 
@@ -47,13 +47,19 @@ Run the complete unit suite:
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Run live Supabase integration tests explicitly:
+Run all live Supabase integration tests explicitly on the verified development target:
 
 ```sh
-PYTHONPATH=src BRI_RUN_DB_TESTS=1 .venv/bin/python -m unittest discover -s tests -p 'test_database_rls.py' -v
+PYTHONPATH=src BRI_RUN_DB_TESTS=1 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Database integration tests require `DATABASE_URL` to connect as `bri_app`. Each test inserts the synthetic fixture in its own transaction and registers unconditional rollback/close cleanup, including when setup fails. Tests never truncate, delete, or reset persistent data. They cover tenant-filtered reads/writes, missing-context denial, composite-FK rejection, forced RLS, role attributes, non-ownership and the role-membership allowlist. Pure unit tests cover endpoint validation, legacy migration pinning and ledger states.
+For first-time synthetic seed creation or exact-value verification, run this explicitly after migrations; it is not part of tests or API startup:
+
+```sh
+PYTHONPATH=src .venv/bin/python -m scripts.db.seed_synthetic_data --apply
+```
+
+Database integration tests require `DATABASE_URL` to connect as `bri_app`. Each test inserts the synthetic fixture in its own transaction and registers unconditional rollback/close cleanup, including when setup fails. Tests never truncate, delete, or reset persistent data. They cover tenant-filtered reads/writes, missing-context denial, composite-FK rejection, forced RLS and table privileges for all knowledge lifecycle tables, plus role attributes, non-ownership and the role-membership allowlist. Pure unit tests cover endpoint validation, seed no-overwrite/idempotency, legacy migration pinning and ledger states.
 
 ## Known limits
 

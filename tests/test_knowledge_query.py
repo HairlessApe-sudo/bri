@@ -36,6 +36,29 @@ class KnowledgeAnswerTests(unittest.TestCase):
         self.assertEqual(result.citations[0].source_version, "v1")
         self.assertEqual(result.citations[0].source_location, "page 2, section 4")
 
+    def test_citations_preserve_source_version_and_extraction_provenance(self):
+        item = replace(
+            self.approved,
+            source_id="source-1",
+            source_version_id="source-version-1-v1",
+            extraction_id="extract-1-v1",
+            content_sha256="a" * 64,
+            extractor_name="synthetic-fixture",
+            extractor_version="1",
+        )
+        result = answer_question(
+            self.principal,
+            "How many years must employee files be retained?",
+            [item],
+        )
+        citation = result.citations[0]
+        self.assertEqual(citation.source_id, "source-1")
+        self.assertEqual(citation.source_version_id, "source-version-1-v1")
+        self.assertEqual(citation.extraction_id, "extract-1-v1")
+        self.assertEqual(citation.content_sha256, "a" * 64)
+        self.assertEqual(citation.extractor_name, "synthetic-fixture")
+        self.assertEqual(citation.extractor_version, "1")
+
     def test_excludes_unapproved_knowledge_before_matching(self):
         proposed = replace(self.approved, validation_state="proposed")
 

@@ -1,0 +1,35 @@
+{
+  "synthetic_only": true,
+  "sources": [
+    {
+      "tenant_id": "tenant-synth-noordlicht",
+      "source_id": "source-synth-noordlicht-retention",
+      "scope_node_id": "org-noordlicht-policy-team",
+      "title": "Synthetic Records Retention Policy",
+      "source_kind": "synthetic_text",
+      "created_by": "user-noordlicht-proposer",
+      "source_version_id": "source-version-synth-noordlicht-retention-v1",
+      "version_label": "v1",
+      "source_location": "fixture://synthetic/noordlicht/retention-policy/v1#page=2",
+      "extraction_id": "extract-synth-noordlicht-retention-v1",
+      "content": "Employee files must be retained for seven years.",
+      "extractor_name": "synthetic-fixture",
+      "extractor_version": "1"
+    },
+    {
+      "tenant_id": "tenant-synth-zilvermeer",
+      "source_id": "source-synth-zilvermeer-culture",
+      "scope_node_id": "org-zilvermeer-culture-team",
+      "title": "Synthetic Culture Service Schedule",
+      "source_kind": "synthetic_text",
+      "created_by": "user-zilvermeer-proposer",
+      "source_version_id": "source-version-synth-zilvermeer-culture-v1",
+      "version_label": "v1",
+      "source_location": "fixture://synthetic/zilvermeer/culture-schedule/v1#section=opening-hours",
+      "extraction_id": "extract-synth-zilvermeer-culture-v1",
+      "content": "Public library opening hours are 09:00 to 17:00 on weekdays.",
+      "extractor_name": "synthetic-fixture",
+      "extractor_version": "1"
+    }
+  ]
+}

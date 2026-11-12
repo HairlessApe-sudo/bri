@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timezone
+import hashlib
 import os
 from typing import Iterator
 import unittest
 
 from fastapi.testclient import TestClient
 
+from bri.access.policy import Principal
 from bri.api.app import ApiSettings, DatabaseUnavailable, create_app
 from bri.api.database import Database, TenantSession, is_approved_app_target
 
@@ -24,10 +27,20 @@ class ApiDatabaseIntegrationTests(unittest.TestCase):
         if not is_approved_app_target(settings.supabase_url, settings.database_url):
             self.fail("live API tests require the approved project and bri_app database URL")
         settings = replace(settings, dev_auth_enabled=True)
+        self.database = Database(settings.supabase_url, settings.database_url)
         self.client = TestClient(
-            create_app(settings=settings, database=Database(settings.supabase_url, settings.database_url)),
+            create_app(settings=settings, database=self.database),
             client=("127.0.0.1", 51000),
         )
+
+    def test_write_context_is_transaction_local_and_uses_bri_app(self) -> None:
+        with self.database.write_tenant_context("tenant-synth-noordlicht") as session:
+            self.assertEqual(session.tenant_id, "tenant-synth-noordlicht")
+            row = session.connection.execute(
+                "SELECT current_user, current_setting('bri.tenant_id', true), "
+                "current_setting('transaction_read_only')"
+            ).fetchone()
+            self.assertEqual(row, ("bri_app", "tenant-synth-noordlicht", "off"))
 
     def test_health_connects_with_restricted_application_role(self) -> None:
         response = self.client.get("/health")
@@ -129,10 +142,87 @@ class FakeReadConnection:
         raise AssertionError("unexpected query in API test")
 
 
+class FakeKnowledgeConnection:
+    def __init__(self) -> None:
+        content_noordlicht = "Employee files must be retained for seven years."
+        content_zilvermeer = "Public library opening hours are 09:00 to 17:00 on weekdays."
+        self.sources = {
+            ("tenant-synth-noordlicht", "extract-synth-noordlicht-retention-v1"): (
+                "org-noordlicht-policy-team", "Synthetic Records Retention Policy",
+                "source-synth-noordlicht-retention", "source-version-synth-noordlicht-retention-v1",
+                "v1", "extract-synth-noordlicht-retention-v1", content_noordlicht,
+                hashlib.sha256(content_noordlicht.encode()).hexdigest(),
+                "synthetic-fixture", "1",
+                "fixture://synthetic/noordlicht/retention-policy/v1#page=2",
+            ),
+            ("tenant-synth-zilvermeer", "extract-synth-zilvermeer-culture-v1"): (
+                "org-zilvermeer-culture-team", "Synthetic Culture Service Schedule",
+                "source-synth-zilvermeer-culture", "source-version-synth-zilvermeer-culture-v1",
+                "v1", "extract-synth-zilvermeer-culture-v1", content_zilvermeer,
+                hashlib.sha256(content_zilvermeer.encode()).hexdigest(),
+                "synthetic-fixture", "1",
+                "fixture://synthetic/zilvermeer/culture-schedule/v1#section=opening-hours",
+            ),
+        }
+        self.proposals: dict[tuple[str, str], tuple] = {}
+        self.decisions: dict[tuple[str, str], tuple] = {}
+        self.validated: set[tuple[str, str]] = set()
+
+    def execute(self, query: str, params=()) -> FakeResult:
+        normalized = " ".join(query.split())
+        if "FROM bri.source_extractions x" in normalized:
+            return FakeResult([self.sources[(params[0], params[1])]] if (params[0], params[1]) in self.sources else [])
+        if normalized.startswith("INSERT INTO bri.knowledge_proposals"):
+            tenant_id, proposal_id, extraction_id, scope_id, proposed_by = params
+            source = self.sources[(tenant_id, extraction_id)]
+            proposed_at = datetime.now(timezone.utc)
+            row = (
+                proposal_id, tenant_id, scope_id, proposed_by, proposed_at,
+                source[1], source[2], source[3], source[4], source[5], source[6],
+                source[7], source[8], source[9], source[10],
+            )
+            self.proposals[(tenant_id, proposal_id)] = row
+            return FakeResult([(proposed_at,)])
+        if normalized.startswith("INSERT INTO bri.validation_decisions"):
+            tenant_id, decision_id, proposal_id, reviewer_id, decision, comment = params
+            key = (tenant_id, proposal_id)
+            if key in self.decisions:
+                return FakeResult([])
+            decided_at = datetime.now(timezone.utc)
+            self.decisions[key] = (decision_id, reviewer_id, decision, comment, decided_at)
+            return FakeResult([(decided_at,)])
+        if normalized.startswith("INSERT INTO bri.validated_knowledge"):
+            self.validated.add((params[0], params[1]))
+            return FakeResult([])
+        if "JOIN bri.validated_knowledge v" in normalized:
+            tenant_id, scopes = params
+            return FakeResult([
+                row for key, row in self.proposals.items()
+                if key[0] == tenant_id and key in self.validated and row[2] in scopes
+            ])
+        if "LEFT JOIN bri.validation_decisions d" in normalized:
+            tenant_id, scopes = params
+            return FakeResult([
+                row for key, row in self.proposals.items()
+                if key[0] == tenant_id and key not in self.decisions and row[2] in scopes
+            ])
+        if normalized.startswith("SELECT p.proposal_id"):
+            tenant_id, proposal_id = params
+            row = self.proposals.get((tenant_id, proposal_id))
+            return FakeResult([row] if row else [])
+        raise AssertionError("unexpected knowledge SQL in API test")
+
+
 class FakeDatabase:
-    def __init__(self, healthy: bool = True, session: TenantSession | None = None) -> None:
+    def __init__(
+        self,
+        healthy: bool = True,
+        session: TenantSession | None = None,
+        connection: object | None = None,
+    ) -> None:
         self.healthy = healthy
         self.session = session
+        self.connection = connection
         self.contexts: list[str] = []
 
     def healthcheck(self) -> None:
@@ -142,7 +232,12 @@ class FakeDatabase:
     @contextmanager
     def tenant_context(self, tenant_id: str) -> Iterator[TenantSession]:
         self.contexts.append(tenant_id)
-        yield self.session or TenantSession(tenant_id, None)
+        yield self.session or TenantSession(tenant_id, self.connection)
+
+    @contextmanager
+    def write_tenant_context(self, tenant_id: str) -> Iterator[TenantSession]:
+        self.contexts.append(tenant_id)
+        yield self.session or TenantSession(tenant_id, self.connection)
 
 
 class ApiTests(unittest.TestCase):
@@ -151,6 +246,15 @@ class ApiTests(unittest.TestCase):
         settings = ApiSettings(environment="development", dev_auth_enabled=True)
         self.app = create_app(settings=settings, database=self.database)
         self.client = TestClient(self.app, client=("127.0.0.1", 51000))
+
+    def knowledge_client(self):
+        connection = FakeKnowledgeConnection()
+        database = FakeDatabase(connection=connection)
+        app = create_app(
+            settings=ApiSettings(environment="development", dev_auth_enabled=True),
+            database=database,
+        )
+        return TestClient(app, client=("127.0.0.1", 51000)), app, connection
 
     def test_health_checks_database_without_disclosing_connection_details(self) -> None:
         response = self.client.get("/health")
@@ -165,13 +269,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(failed.status_code, 503)
         self.assertNotIn("private connection detail", failed.text)
 
-    def test_openapi_documents_health_and_read_only_routes(self) -> None:
+    def test_openapi_documents_health_and_knowledge_lifecycle_routes(self) -> None:
         response = self.client.get("/openapi.json")
         self.assertEqual(response.status_code, 200)
         schema = response.json()
         self.assertIn("/v1/organizations/structure", schema["paths"])
         self.assertIn("/v1/organizations/nodes/{node_id}", schema["paths"])
         self.assertIn("/v1/knowledge", schema["paths"])
+        self.assertIn("/v1/knowledge/proposals", schema["paths"])
+        self.assertIn("get", schema["paths"]["/v1/knowledge/proposals"])
+        self.assertIn("post", schema["paths"]["/v1/knowledge/proposals"])
+        self.assertIn("post", schema["paths"]["/v1/knowledge/proposals/{proposal_id}/decision"])
         self.assertIn("/v1/knowledge/search", schema["paths"])
         self.assertIn("/v1/sources/{record_id}", schema["paths"])
         parameters = schema["paths"]["/v1/knowledge"]["get"]["parameters"]
@@ -265,6 +373,22 @@ class ApiTests(unittest.TestCase):
             404,
         )
 
+    def test_knowledge_reads_fail_closed_when_database_session_is_unavailable(self) -> None:
+        response = self.client.get(
+            "/v1/knowledge",
+            headers={"X-Dev-Identity": "user-noordlicht-reader"},
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("Employee files must be retained", response.text)
+
+    def test_only_proposers_can_create_knowledge_proposals(self) -> None:
+        response = self.client.post(
+            "/v1/knowledge/proposals",
+            headers={"X-Dev-Identity": "user-noordlicht-reader"},
+            json={"extraction_id": "extract-synth-noordlicht-retention-v1"},
+        )
+        self.assertEqual(response.status_code, 403)
+
     def test_missing_permissions_are_denied(self) -> None:
         org_denied = self.client.get(
             "/v1/organizations/structure",
@@ -277,41 +401,198 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(org_denied.status_code, 403)
         self.assertEqual(knowledge_denied.status_code, 403)
 
-    def test_knowledge_records_and_sources_are_validated_scoped_and_tenant_isolated(self) -> None:
-        headers = {"X-Dev-Identity": "user-noordlicht-reader"}
-        response = self.client.get("/v1/knowledge", headers=headers)
-        self.assertEqual(response.status_code, 200)
-        records = response.json()
-        self.assertEqual([item["record_id"] for item in records], ["knowledge-noordlicht-retention"])
-        self.assertEqual(records[0]["validation_state"], "approved")
-        self.assertNotIn("knowledge-zilvermeer-policy", {item["record_id"] for item in records})
-        self.assertNotIn("knowledge-noordlicht-proposed", {item["record_id"] for item in records})
+    def test_proposal_review_scope_and_approval_publish_validated_knowledge(self) -> None:
+        client, _, _ = self.knowledge_client()
+        proposer = {"X-Dev-Identity": "user-noordlicht-proposer"}
+        reviewer = {"X-Dev-Identity": "user-noordlicht-reviewer"}
+        employee = {"X-Dev-Identity": "user-noordlicht-reader"}
 
-        source = self.client.get(
-            "/v1/sources/knowledge-noordlicht-retention", headers=headers
+        created = client.post(
+            "/v1/knowledge/proposals",
+            headers=proposer,
+            json={"extraction_id": "extract-synth-noordlicht-retention-v1"},
         )
-        self.assertEqual(source.status_code, 200)
-        self.assertEqual(source.json()["source_version"], "v1")
-        self.assertEqual(
-            self.client.get("/v1/sources/knowledge-zilvermeer-policy", headers=headers).status_code,
-            404,
-        )
-        self.assertEqual(
-            self.client.get("/v1/sources/knowledge-noordlicht-proposed", headers=headers).status_code,
-            404,
-        )
+        self.assertEqual(created.status_code, 201)
+        proposal_id = created.json()["proposal_id"]
+        self.assertEqual(created.json()["proposed_by"], "user-noordlicht-proposer")
+        self.assertEqual(created.json()["status"], "proposed")
 
-    def test_knowledge_search_uses_existing_evidence_retrieval(self) -> None:
-        response = self.client.get(
+        pending = client.get("/v1/knowledge/proposals", headers=reviewer)
+        self.assertEqual(pending.status_code, 200)
+        self.assertEqual([item["proposal_id"] for item in pending.json()], [proposal_id])
+        self.assertEqual(client.get("/v1/knowledge/proposals", headers=employee).status_code, 403)
+        self.assertEqual(
+            client.get("/v1/knowledge/proposals", headers={"X-Dev-Identity": "user-noordlicht-steward"}).json(),
+            [],
+        )
+        self.assertEqual(
+            client.get("/v1/knowledge/proposals", headers={"X-Dev-Identity": "user-zilvermeer-reviewer"}).json(),
+            [],
+        )
+        self.assertEqual(client.get("/v1/knowledge", headers=employee).json(), [])
+        before_approval = client.get(
             "/v1/knowledge/search",
             params={"q": "How many years must employee files be retained?"},
-            headers={"X-Dev-Identity": "user-noordlicht-reader"},
+            headers=employee,
+        ).json()
+        self.assertEqual(before_approval["status"], "insufficient")
+        self.assertEqual(before_approval["citations"], [])
+        self.assertEqual(client.get(f"/v1/knowledge/{proposal_id}", headers={"X-Dev-Identity": "user-zilvermeer-reader"}).status_code, 404)
+        self.assertEqual(
+            client.post(
+                f"/v1/knowledge/proposals/{proposal_id}/decision",
+                headers={"X-Dev-Identity": "user-noordlicht-steward"},
+                json={"decision": "approved"},
+            ).status_code,
+            403,
         )
-        self.assertEqual(response.status_code, 200)
-        result = response.json()
-        self.assertEqual(result["status"], "supported")
-        self.assertEqual(result["answer"], "Employee files must be retained for seven years.")
-        self.assertEqual(result["citations"][0]["record_id"], "knowledge-noordlicht-retention")
+        self.assertEqual(
+            client.post(
+                f"/v1/knowledge/proposals/{proposal_id}/decision",
+                headers=employee,
+                json={"decision": "approved"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post(
+                f"/v1/knowledge/proposals/{proposal_id}/decision",
+                headers=proposer,
+                json={"decision": "approved"},
+            ).status_code,
+            403,
+        )
+
+        decision = client.post(
+            f"/v1/knowledge/proposals/{proposal_id}/decision",
+            headers=reviewer,
+            json={"decision": "approved", "comment": "Synthetic review passed."},
+        )
+        self.assertEqual(decision.status_code, 200)
+        self.assertEqual(decision.json()["reviewer_id"], "user-noordlicht-reviewer")
+        self.assertEqual(decision.json()["decision"], "approved")
+        self.assertEqual(client.get("/v1/knowledge/proposals", headers=reviewer).json(), [])
+        self.assertEqual(
+            client.post(
+                f"/v1/knowledge/proposals/{proposal_id}/decision",
+                headers=reviewer,
+                json={"decision": "rejected"},
+            ).status_code,
+            409,
+        )
+
+        record = client.get(f"/v1/knowledge/{proposal_id}", headers=employee)
+        self.assertEqual(record.status_code, 200)
+        record_json = record.json()
+        self.assertEqual(record_json["validation_state"], "approved")
+        self.assertEqual(record_json["source_id"], "source-synth-noordlicht-retention")
+        self.assertEqual(record_json["source_version_id"], "source-version-synth-noordlicht-retention-v1")
+        self.assertEqual(record_json["extraction_id"], "extract-synth-noordlicht-retention-v1")
+        self.assertEqual(
+            record_json["content_sha256"],
+            hashlib.sha256(record_json["content"].encode()).hexdigest(),
+        )
+        source = client.get(f"/v1/sources/{proposal_id}", headers=employee)
+        self.assertEqual(source.status_code, 200)
+        self.assertEqual(source.json()["source_location"], "fixture://synthetic/noordlicht/retention-policy/v1#page=2")
+        answer = client.get(
+            "/v1/knowledge/search",
+            params={"q": "How many years must employee files be retained?"},
+            headers=employee,
+        ).json()
+        self.assertEqual(answer["status"], "supported")
+        self.assertEqual(answer["citations"][0]["record_id"], proposal_id)
+        self.assertEqual(answer["citations"][0]["source_version_id"], record_json["source_version_id"])
+        self.assertEqual(answer["citations"][0]["content_sha256"], record_json["content_sha256"])
+
+    def test_rejected_proposals_are_terminal_and_never_searchable(self) -> None:
+        client, _, _ = self.knowledge_client()
+        proposal = client.post(
+            "/v1/knowledge/proposals",
+            headers={"X-Dev-Identity": "user-noordlicht-proposer"},
+            json={"extraction_id": "extract-synth-noordlicht-retention-v1"},
+        ).json()
+        proposal_id = proposal["proposal_id"]
+        rejected = client.post(
+            f"/v1/knowledge/proposals/{proposal_id}/decision",
+            headers={"X-Dev-Identity": "user-noordlicht-reviewer"},
+            json={"decision": "rejected", "comment": "Synthetic rejection."},
+        )
+        self.assertEqual(rejected.status_code, 200)
+        self.assertEqual(rejected.json()["reviewer_id"], "user-noordlicht-reviewer")
+        self.assertEqual(client.get("/v1/knowledge/proposals", headers={"X-Dev-Identity": "user-noordlicht-reviewer"}).json(), [])
+        self.assertEqual(
+            client.get(
+                "/v1/knowledge/search",
+                params={"q": "How many years must employee files be retained?"},
+                headers={"X-Dev-Identity": "user-noordlicht-reader"},
+            ).json()["status"],
+            "insufficient",
+        )
+        self.assertEqual(
+            client.get(f"/v1/knowledge/{proposal_id}", headers={"X-Dev-Identity": "user-noordlicht-reader"}).status_code,
+            404,
+        )
+        self.assertEqual(
+            client.post(
+                f"/v1/knowledge/proposals/{proposal_id}/decision",
+                headers={"X-Dev-Identity": "user-noordlicht-reviewer"},
+                json={"decision": "approved"},
+            ).status_code,
+            409,
+        )
+
+    def test_cross_tenant_source_and_revoked_read_grant_are_denied(self) -> None:
+        client, app, _ = self.knowledge_client()
+        denied = client.post(
+            "/v1/knowledge/proposals",
+            headers={"X-Dev-Identity": "user-noordlicht-proposer"},
+            json={"extraction_id": "extract-synth-zilvermeer-culture-v1"},
+        )
+        self.assertEqual(denied.status_code, 404)
+        proposal = client.post(
+            "/v1/knowledge/proposals",
+            headers={"X-Dev-Identity": "user-noordlicht-proposer"},
+            json={"extraction_id": "extract-synth-noordlicht-retention-v1"},
+        ).json()
+        proposal_id = proposal["proposal_id"]
+        client.post(
+            f"/v1/knowledge/proposals/{proposal_id}/decision",
+            headers={"X-Dev-Identity": "user-noordlicht-reviewer"},
+            json={"decision": "approved"},
+        )
+        identity = "user-noordlicht-reader"
+        original = app.state.catalog.principals[identity]
+        app.state.catalog.principals[identity] = Principal(original.subject_id, original.tenant_ids, ())
+        self.assertEqual(
+            client.get(f"/v1/knowledge/{proposal_id}", headers={"X-Dev-Identity": identity}).status_code,
+            403,
+        )
+
+    def test_corrupt_extracted_content_fails_closed(self) -> None:
+        client, _, connection = self.knowledge_client()
+        key = ("tenant-synth-noordlicht", "extract-synth-noordlicht-retention-v1")
+        source = connection.sources[key]
+        connection.sources[key] = (*source[:7], "0" * 64, *source[8:])
+        response = client.post(
+            "/v1/knowledge/proposals",
+            headers={"X-Dev-Identity": "user-noordlicht-proposer"},
+            json={"extraction_id": key[1]},
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(connection.proposals, {})
+
+    def test_multi_tenant_identity_is_rejected_before_scoped_database_access(self) -> None:
+        identity = "user-noordlicht-reader"
+        original = self.app.state.catalog.principals[identity]
+        self.app.state.catalog.principals[identity] = Principal(
+            original.subject_id,
+            frozenset({"tenant-synth-noordlicht", "tenant-synth-zilvermeer"}),
+            original.grants,
+        )
+        response = self.client.get("/v1/knowledge", headers={"X-Dev-Identity": identity})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.database.contexts, [])
 
     def test_tenant_selection_headers_query_and_body_are_rejected(self) -> None:
         identity = {"X-Dev-Identity": "user-noordlicht-reader"}
@@ -327,9 +608,18 @@ class ApiTests(unittest.TestCase):
             headers=identity,
             json={"tenant_id": "tenant-synth-zilvermeer"},
         )
+        write_body_spoof = self.client.post(
+            "/v1/knowledge/proposals",
+            headers={"X-Dev-Identity": "user-noordlicht-proposer"},
+            json={
+                "extraction_id": "extract-synth-noordlicht-retention-v1",
+                "tenant_id": "tenant-synth-zilvermeer",
+            },
+        )
         self.assertEqual(header_spoof.status_code, 400)
         self.assertEqual(query_spoof.status_code, 400)
         self.assertEqual(body_spoof.status_code, 400)
+        self.assertEqual(write_body_spoof.status_code, 422)
 
     def test_dev_identity_is_disabled_outside_explicit_local_development(self) -> None:
         app = create_app(

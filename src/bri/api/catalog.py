@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Mapping
 
 from bri.access.policy import AccessGrant, Principal
-from bri.knowledge.query import KnowledgeItem
 
 
 _FIXTURE_PATH = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "synthetic_municipalities.json"
@@ -43,7 +42,6 @@ class SyntheticOrganization:
 class SyntheticCatalog:
     organizations: Mapping[str, SyntheticOrganization]
     principals: Mapping[str, Principal]
-    knowledge_items: tuple[KnowledgeItem, ...]
 
 
 def load_catalog(fixture_path: Path = _FIXTURE_PATH) -> SyntheticCatalog:
@@ -106,36 +104,4 @@ def load_catalog(fixture_path: Path = _FIXTURE_PATH) -> SyntheticCatalog:
                 grants=tuple(grants),
             )
 
-    knowledge_items = (
-        KnowledgeItem(
-            record_id="knowledge-noordlicht-retention",
-            tenant_id="tenant-synth-noordlicht",
-            scope_id="org-noordlicht-policy-team",
-            validation_state="approved",
-            title="Synthetic Records Retention Policy",
-            source_version="v1",
-            source_location="fixture://synthetic/noordlicht/retention-policy/v1#page=2",
-            content="Employee files must be retained for seven years.",
-        ),
-        KnowledgeItem(
-            record_id="knowledge-noordlicht-proposed",
-            tenant_id="tenant-synth-noordlicht",
-            scope_id="org-noordlicht-policy-team",
-            validation_state="proposed",
-            title="Synthetic Proposed Retention Policy",
-            source_version="draft-v2",
-            source_location="fixture://synthetic/noordlicht/retention-policy/draft-v2",
-            content="Employee files should be retained for nine years.",
-        ),
-        KnowledgeItem(
-            record_id="knowledge-zilvermeer-policy",
-            tenant_id="tenant-synth-zilvermeer",
-            scope_id="org-zilvermeer-culture-team",
-            validation_state="approved",
-            title="Synthetic Culture Service Schedule",
-            source_version="v1",
-            source_location="fixture://synthetic/zilvermeer/culture-schedule/v1#section=opening-hours",
-            content="Public library opening hours are listed in the culture service schedule.",
-        ),
-    )
-    return SyntheticCatalog(organizations, principals, knowledge_items)
+    return SyntheticCatalog(organizations, principals)

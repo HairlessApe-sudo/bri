@@ -25,6 +25,12 @@ class KnowledgeItem:
     source_version: str
     source_location: str
     content: str
+    source_id: str = ""
+    source_version_id: str = ""
+    extraction_id: str = ""
+    content_sha256: str = ""
+    extractor_name: str = ""
+    extractor_version: str = ""
     current: bool = True
 
 
@@ -35,6 +41,12 @@ class EvidenceCitation:
     source_version: str
     source_location: str
     excerpt: str
+    source_id: str = ""
+    source_version_id: str = ""
+    extraction_id: str = ""
+    content_sha256: str = ""
+    extractor_name: str = ""
+    extractor_version: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +71,12 @@ def _citation(item: KnowledgeItem, excerpt: str) -> EvidenceCitation:
         source_version=item.source_version,
         source_location=item.source_location,
         excerpt=excerpt,
+        source_id=item.source_id,
+        source_version_id=item.source_version_id,
+        extraction_id=item.extraction_id,
+        content_sha256=item.content_sha256,
+        extractor_name=item.extractor_name,
+        extractor_version=item.extractor_version,
     )
 
 

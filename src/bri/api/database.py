@@ -1,4 +1,4 @@
-"""Restricted, read-only connections for the local BRI API."""
+"""Restricted tenant-scoped connections for the local BRI API."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -100,10 +100,11 @@ class Database:
             raise DatabaseUnavailable("database health check failed") from exc
 
     @contextmanager
-    def tenant_context(self, tenant_id: str) -> Iterator[TenantSession]:
+    def _tenant_transaction(self, tenant_id: str, *, read_only: bool) -> Iterator[TenantSession]:
         try:
             with self._connect() as connection:
-                connection.execute("SET TRANSACTION READ ONLY")
+                if read_only:
+                    connection.execute("SET TRANSACTION READ ONLY")
                 role = connection.execute("SELECT current_user").fetchone()
                 if not role or role[0] != "bri_app":
                     raise DatabaseUnavailable("database login is not the restricted application role")
@@ -116,10 +117,21 @@ class Database:
                 ).fetchone()
                 if not context or context[0] != tenant_id:
                     raise DatabaseUnavailable("tenant context was not established")
-                # Exercise the RLS boundary in the same read-only transaction.
                 connection.execute("SELECT count(*) FROM bri.tenants").fetchone()
                 yield TenantSession(tenant_id=tenant_id, connection=connection)
         except DatabaseUnavailable:
             raise
         except psycopg.Error as exc:
             raise DatabaseUnavailable("tenant database context failed") from exc
+
+    @contextmanager
+    def tenant_context(self, tenant_id: str) -> Iterator[TenantSession]:
+        """Open a read-only RLS transaction for one server-resolved tenant."""
+        with self._tenant_transaction(tenant_id, read_only=True) as session:
+            yield session
+
+    @contextmanager
+    def write_tenant_context(self, tenant_id: str) -> Iterator[TenantSession]:
+        """Open a read/write RLS transaction for one server-resolved tenant."""
+        with self._tenant_transaction(tenant_id, read_only=False) as session:
+            yield session
