@@ -6,7 +6,7 @@
 - Owner: Black Raven Studios (BRS), subject to applicable rights and contracts.
 - Product direction: organisation-independent intelligence infrastructure, not a single-organisation case application.
 - Workspace: this new project directory, separate from the previous `agent-pilot/BRI/` workspace.
-- Stage: Assignment 01 local synthetic foundation implementation.
+- Stage: Assignment 02 Supabase PostgreSQL development foundation; synthetic data only.
 - Implementation: explicitly authorised by the current assignment within this workspace using synthetic data; production systems, real customer data, external providers and external infrastructure remain out of scope.
 - Data: synthetic examples only.
 
@@ -31,9 +31,11 @@ Treat this as the working product baseline, not an assertion of legal ownership,
 
 ## Architecture position
 
-Proposed, not approved: API-first modular platform with distinct platform foundation, integration, knowledge, intelligence, analytics/reporting and experience capabilities. Keep Knowledge Intelligence and Decision Intelligence as separate bounded capabilities linked by provenance/evidence. Prefer a modular monolith with asynchronous processing boundaries until scale or isolation evidence justifies services. PostgreSQL and the local shared-database tenancy baseline are approved for this MVP through AD-01/02; the broader web/API stack, production object storage and deployment remain in `architecture/architecture-decisions.md`.
+Proposed, not approved: API-first modular platform with distinct platform foundation, integration, knowledge, intelligence, analytics/reporting and experience capabilities. Keep Knowledge Intelligence and Decision Intelligence as separate bounded capabilities linked by provenance/evidence. Prefer a modular monolith with asynchronous processing boundaries until scale or isolation evidence justifies services. PostgreSQL and shared-database tenancy for the development MVP are approved through AD-01/02. AD-02 also approves tenant-scoped composite foreign keys, RLS + FORCE RLS, mandatory application authorization, default-deny explicit scopes without implicit inheritance, development-only synthetic identities, and separate least-privilege application/migration roles. Do not modify Supabase-managed schemas or the previous BRI Supabase project. These are not production approvals; broader web/API stack, production storage and deployment remain unresolved in `architecture/architecture-decisions.md`.
 
 ## Status legend
+
+Governance precedence: explicit product-owner decisions in approved ADRs are authoritative for their scope; dependent architecture/security/data/implementation documents must be kept consistent. Older contradictory statements are updated, not treated as independent vetoes. ADRs do not override explicit security prohibitions or legal boundaries outside their scope. Unresolved decisions remain unresolved unless explicitly approved.
 
 - User-provided baseline: direction explicitly in the initiating brief.
 - Proposed: recommendation awaiting designated approval.

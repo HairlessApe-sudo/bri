@@ -1,7 +1,7 @@
 # BRI Project Progress
 
-Last updated: 2026-11-10
-Stage: 3 — platform foundation MVP, local synthetic implementation
+Last updated: 2026-11-12
+Stage: 3 — platform foundation MVP, synthetic development implementation
 
 ## Current status
 
@@ -17,8 +17,9 @@ Stage: 3 — platform foundation MVP, local synthetic implementation
 
 - User-provided product direction: recorded as baseline for this assignment.
 - Proposed architecture recommendations: documented; technology stack remains proposed.
-- Approved for the local MVP on 2026-11-10: AD-01 PostgreSQL system-of-record selection (partial); AD-02 shared database with tenant_id/composite-FK/forced-RLS plus service authorization; AD-06 RBAC with explicit resource/node scopes, default deny, no parent-to-child permission inheritance; AD-15 development-only synthetic identity adapter. Production identity and SaaS topology remain unresolved.
+- Approved for the local development MVP on 2026-11-10/12: AD-01 PostgreSQL system-of-record selection (partial); AD-02 shared database with tenant_id/composite-FK/forced-RLS plus mandatory application authorization, explicit resource scopes, default deny and no implicit permission inheritance; AD-06 RBAC with explicit scopes; AD-15 development-only synthetic identity adapter. Production identity and SaaS topology remain unresolved.
 - Named product, security, privacy, legal and operations approvers: not supplied.
+- On 2026-11-12 the product owner resolved the AD-02 development-MVP scope and governance precedence. Approved only for the new BRI development Supabase project: shared PostgreSQL tenant isolation, composite tenant FKs, RLS + FORCE RLS, mandatory application authorization, default-deny exact scopes/no implicit inheritance, synthetic development identities, separate least-privilege application/migration roles. Supabase-managed schemas and the previous BRI Supabase project are explicitly excluded. No production approval is implied.
 - Numeric SLOs, workload, budget and schedule: unresolved.
 
 ## Decision and risk focus
@@ -37,11 +38,11 @@ See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependenci
 | CSV extraction and access-policy tracer slices | Complete | Test-first; covered by current test suite. |
 | Deterministic Knowledge Intelligence + municipal fixtures | Complete as domain slice | 21 tests pass across extraction, policy, citations, abstention, conflict, and two-tenant seed structure; no UI/API/database integration yet. |
 | PDF/XLSX extraction and local dependency setup | Complete as parser slice | 31-test suite passes; parser libraries pinned/licensed; PDF text-only, no OCR; XLSX formulas not executed. |
-| PostgreSQL-backed application/ingestion vertical slice | In progress / blocked on environment | User approved local tenant/access decisions and selected Docker WSL integration; PostgreSQL runtime is not yet available. |
+| Supabase PostgreSQL foundation | Blocked before connection | Safe preflight confirmed `BRI_ENVIRONMENT` is development and the Supabase API URL has a project reference, but both PostgreSQL URL host formats do not expose a safely comparable project reference. No database connection, role provisioning, migration or data operation was attempted. Require connection URLs whose project identity can be matched to `SUPABASE_URL`, or an equivalent independently verifiable project identifier, then resume. |
 
 ## Next decisions / questions
 
-1. Enable Docker Desktop WSL integration; user selected this route, but it is not yet available in WSL.
+1. Supply PostgreSQL connection URLs with a safely matchable Supabase project reference (or an independently verifiable project identifier) before any database connection or modification.
 2. Decide production identity federation, policy/role catalogue and detailed organisational hierarchy semantics before building production auth or schema.
 3. Define the approved data classification/provider policy before any external AI provider is configured; default to deterministic mock.
 4. Confirm accountable product/security/privacy/legal/operations owners and future SaaS/private profiles.
@@ -49,3 +50,4 @@ See `../architecture/architecture-decisions.md` for AD-01–AD-17 and dependenci
 ## Change log
 
 - 2026-11-10: Assignment 01 began; local Git repository configured to the specified remote and approved author identity; user approved local tenant-isolation, access-scope and dev-identity decisions. CSV, PDF, XLSX, policy, deterministic knowledge-answering and synthetic municipal fixture slices pass 31 tests. PostgreSQL-backed work awaits Docker WSL integration.
+- 2026-11-12: Product owner confirmed development-only AD-02 details and governance precedence. Updated AD-02, security model, data model and project context to align. Assignment 02 preflight stopped before any database connection or modification because the PostgreSQL connection host formats do not expose a project reference that can be compared with the configured Supabase API project reference.

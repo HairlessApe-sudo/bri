@@ -1,6 +1,10 @@
 # Architecture Decision Register
 
-Status: Register of proposed/relevant decisions; nothing here is approved unless explicitly marked and signed below.
+Status: Register of proposed/relevant decisions. Explicit product-owner decisions recorded as Approved below are authoritative for their documented scope. Other decisions remain proposed/unresolved.
+
+## Governance precedence
+
+Explicit product-owner decisions recorded in approved Architecture Decision Records (ADRs) are authoritative for the decisions they cover. Architecture, security, data and implementation documents must remain consistent with approved ADRs; older conflicting statements must be updated, not treated as independent vetoes. An approved ADR does not override an explicit security prohibition or legal boundary outside its scope. Unresolved decisions remain unresolved unless explicitly approved.
 
 ## Status rules
 
@@ -16,9 +20,9 @@ User-provided baseline = direction in the initiating brief. Proposed = recommend
 - Still unresolved: exact schema/version semantics, local file storage adapter, production object store, migrations/rollback, backups, encryption/key ownership and analytic projections. Dependencies: temporal model, deployment, workload and legal retention.
 
 ### AD-02 — Tenant isolation topology
-- Status: Approved for the local MVP by explicit product-owner instruction on 2026-11-10; production deployment topology remains unresolved.
+- Status: Approved for the development MVP by explicit product-owner confirmation on 2026-11-12; production deployment topology remains unresolved.
 - Options: shared database with tenant keys/RLS; schema-per-tenant; database-per-tenant; hybrid tiering.
-- Decision: shared PostgreSQL database for the local MVP; every tenant-owned record carries tenant_id; composite tenant-scoped foreign keys prevent cross-tenant references; forced row-level security (including table-owner cases) plus service-layer authorization. The application role must not own tables or have BYPASSRLS. This does not approve the SaaS production topology.
+- Decision: shared PostgreSQL database for the development MVP; every tenant-owned record carries tenant_id; composite tenant-scoped foreign keys prevent cross-tenant references; PostgreSQL RLS with FORCE ROW LEVEL SECURITY on tenant-owned application tables plus mandatory application authorization. Default-deny, explicit resource scopes and no implicit permission inheritance. Development-only synthetic identities are approved. Use separate least-privilege application and migration roles; the application role must not own tables or have BYPASSRLS/superuser privileges. Do not modify Supabase-managed authentication, storage or internal schemas. The previous BRI Supabase project is out of scope. This does not approve production security or topology.
 - Consequences: every query/task must establish tenant context transaction-locally; test direct SQL, jobs, search and all API paths. Maintain isolation tests and plan a dedicated-tenant option only if requirements justify it.
 - Dependencies: SaaS/private offers, customer risk/contract, operator model, scale. RLS alone is insufficient.
 
@@ -121,7 +125,8 @@ User-provided baseline = direction in the initiating brief. Proposed = recommend
 
 ## Approval log
 
-No architecture decisions approved in this foundation assignment. Record: ID, decision, alternatives considered, approver, date, rationale, consequences, review trigger and linked requirements before changing a status to Approved.
+- AD-02 development-MVP scope confirmation: BRI product owner, 2026-11-12. Confirmed shared PostgreSQL with tenant identifiers, tenant-scoped composite foreign keys, RLS + FORCE RLS, mandatory application authorization, default-deny explicit scopes, no implicit inheritance, synthetic development identities, dedicated least-privilege application/migration roles, and exclusion of Supabase-managed schemas and the previous BRI Supabase project. Production approval is expressly not granted.
+- Governance precedence: BRI product owner, 2026-11-12. Approved ADRs govern their documented decisions; dependent documents must be consistent; explicit security prohibitions/legal boundaries remain binding; unresolved decisions stay unresolved absent explicit approval.
 
 ## Assessment of prior reports (reference-only synthesis)
 

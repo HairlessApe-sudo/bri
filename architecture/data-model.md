@@ -1,6 +1,6 @@
 # BRI Logical Data Model
 
-Status: Conceptual design for discussion; not a physical schema, migration plan or approved database choice
+Status: Conceptual design. Approved AD-02 authorizes development-MVP physical schema/migrations for the tenant-isolation foundation only; remaining domain, temporal, retention and production decisions remain unresolved. See `architecture-decisions.md` for governance precedence.
 
 ## 1. Storage roles
 
@@ -69,4 +69,4 @@ Deletion workflow must identify original artifact, extracted artefact, chunks/em
 
 ## 7. Physical design decisions required
 
-Database engine and tenancy layout; row-level policy strategy; hierarchy representation; JSON extensibility limits; source/version hash strategy; encryption/key ownership; event/job persistence; vector dimensions/index strategy; analytic read model; retention/deletion implementation; migration compatibility and rollback. Do not write migrations until AD-01 through AD-07 and the relevant ownership/temporal questions have an approved status.
+For the development-MVP foundation, PostgreSQL/shared-database tenancy, tenant keys, composite tenant-scoped references and forced RLS are approved in AD-02; migrations may implement the bounded synthetic tenant/access schema and its security tests. Do not infer approval for broader domain schemas. Still unresolved: hierarchy semantics beyond explicit parent references, JSON extensibility, source/version hash strategy, encryption/key ownership, event/job persistence, vector dimensions/index strategy, analytics read model, retention/deletion, migration rollback, and production topology. Expand the schema only as relevant decisions are approved.

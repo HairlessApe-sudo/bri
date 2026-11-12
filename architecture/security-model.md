@@ -1,6 +1,6 @@
 # BRI Security and Privacy Model
 
-Status: Proposed baseline controls; threat model and decisions require owner approval
+Status: Proposed security baseline; development-MVP tenant isolation decisions in approved AD-02 are authoritative. Production security approval remains outstanding. See `architecture-decisions.md` for governance precedence.
 
 ## 1. Security objectives
 
@@ -31,7 +31,7 @@ Authorization must apply before data retrieval and again before response/citatio
 
 ## 5. Tenancy options and controls
 
-Options: shared DB with tenant keys and RLS; schema-per-tenant; database-per-tenant; supported hybrid. No option is approved. Regardless of physical model, use tenant-qualified references, service-level scope checks, isolated storage/index/cache/task context, negative tests and audited operator access. RLS is defense in depth, not sole control. Private deployment must use the same logical policy contracts.
+For the development MVP, approved AD-02 selects a shared PostgreSQL database with tenant identifiers, tenant-qualified references/composite foreign keys and RLS plus FORCE ROW LEVEL SECURITY on tenant-owned application tables. Application-level scope authorization is mandatory; access is default-deny with explicit resource scopes and no implicit hierarchy inheritance. Dedicated least-privilege application and migration roles are required; application role must not own tables or have BYPASSRLS/superuser privileges. Use synthetic identities/data only. Do not modify Supabase-managed schemas or the previous BRI Supabase project. This development decision does not approve production topology/security. Regardless of physical model, use isolated storage/index/cache/task context, negative tests and audited operator access. RLS is defense in depth, not sole control. Private deployment must use the same logical policy contracts.
 
 ## 6. Information protection
 
