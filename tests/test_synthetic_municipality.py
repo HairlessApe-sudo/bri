@@ -50,6 +50,40 @@ class SyntheticMunicipalFixtureTests(unittest.TestCase):
             self.assertFalse(is_authorized(reviewer, "knowledge:propose", resource))
             self.assertTrue(is_authorized(reader, "knowledge:read", resource))
 
+    def test_combined_workspace_reader_is_exactly_scoped_and_read_only(self):
+        from bri.api.catalog import load_catalog
+        from bri.access.policy import Resource, is_authorized
+
+        catalog = load_catalog(FIXTURE)
+        identity = catalog.principals["user-noordlicht-workspace-reader"]
+        expected_nodes = {
+            "org-noordlicht-root",
+            "org-noordlicht-policy",
+            "org-noordlicht-policy-team",
+            "org-noordlicht-information",
+            "org-noordlicht-public",
+            "org-noordlicht-public-team",
+        }
+        expected_grants = {
+            ("tenant-synth-noordlicht", "organisation:read", scope)
+            for scope in expected_nodes
+        } | {
+            ("tenant-synth-noordlicht", "knowledge:read", "org-noordlicht-policy-team")
+        }
+        actual_grants = {(grant.tenant_id, grant.action, grant.scope_id) for grant in identity.grants}
+        self.assertEqual(actual_grants, expected_grants)
+        self.assertEqual(identity.tenant_ids, frozenset({"tenant-synth-noordlicht"}))
+        self.assertFalse(any(action not in {"organisation:read", "knowledge:read"} for _, action, _ in actual_grants))
+        self.assertFalse(is_authorized(identity, "knowledge:read", Resource("tenant-synth-zilvermeer", "org-zilvermeer-culture-team")))
+        self.assertFalse(is_authorized(identity, "organisation:read", Resource("tenant-synth-zilvermeer", "org-zilvermeer-root")))
+        self.assertFalse(is_authorized(identity, "knowledge:propose", Resource("tenant-synth-noordlicht", "org-noordlicht-policy-team")))
+        self.assertFalse(is_authorized(identity, "knowledge:review", Resource("tenant-synth-noordlicht", "org-noordlicht-policy-team")))
+        self.assertFalse(is_authorized(identity, "organisation:manage", Resource("tenant-synth-noordlicht", "org-noordlicht-root")))
+        original_org_reader = catalog.principals["user-noordlicht-org-reader"]
+        original_knowledge_reader = catalog.principals["user-noordlicht-reader"]
+        self.assertFalse(is_authorized(original_org_reader, "knowledge:read", Resource("tenant-synth-noordlicht", "org-noordlicht-policy-team")))
+        self.assertFalse(is_authorized(original_knowledge_reader, "organisation:read", Resource("tenant-synth-noordlicht", "org-noordlicht-root")))
+
     def test_source_fixture_is_synthetic_and_covers_both_tenants(self):
         source_path = FIXTURE.parent / "synthetic_sources.json"
         data = json.loads(source_path.read_text(encoding="utf-8"))

@@ -389,6 +389,48 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_combined_workspace_identity_reads_authorized_routes_without_write_access(self) -> None:
+        identity = {"X-Dev-Identity": "user-noordlicht-workspace-reader"}
+        organization = self.client.get("/v1/organizations/structure", headers=identity)
+        self.assertEqual(organization.status_code, 200)
+        self.assertEqual(len(organization.json()["nodes"]), 6)
+
+        client, _, _ = self.knowledge_client()
+        proposer = {"X-Dev-Identity": "user-noordlicht-proposer"}
+        reviewer = {"X-Dev-Identity": "user-noordlicht-reviewer"}
+        created = client.post(
+            "/v1/knowledge/proposals",
+            headers=proposer,
+            json={"extraction_id": "extract-synth-noordlicht-retention-v1"},
+        )
+        self.assertEqual(created.status_code, 201)
+        proposal_id = created.json()["proposal_id"]
+        decided = client.post(
+            f"/v1/knowledge/proposals/{proposal_id}/decision",
+            headers=reviewer,
+            json={"decision": "approved"},
+        )
+        self.assertEqual(decided.status_code, 200)
+
+        records = client.get("/v1/knowledge", headers=identity)
+        self.assertEqual(records.status_code, 200)
+        self.assertEqual([item["title"] for item in records.json()], ["Synthetic Records Retention Policy"])
+        record_id = records.json()[0]["record_id"]
+        self.assertEqual(client.get(f"/v1/sources/{record_id}", headers=identity).status_code, 200)
+        search = client.get("/v1/knowledge/search?q=employee%20files", headers=identity)
+        self.assertEqual(search.status_code, 200)
+        self.assertEqual([item["title"] for item in search.json()["citations"]], ["Synthetic Records Retention Policy"])
+
+        self.assertEqual(client.get("/v1/knowledge/proposals", headers=identity).status_code, 403)
+        self.assertEqual(
+            client.post("/v1/knowledge/proposals", headers=identity, json={"extraction_id": "extract-synth-noordlicht-retention-v1"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post(f"/v1/knowledge/proposals/{proposal_id}/decision", headers=identity, json={"decision": "approved"}).status_code,
+            403,
+        )
+
     def test_missing_permissions_are_denied(self) -> None:
         org_denied = self.client.get(
             "/v1/organizations/structure",

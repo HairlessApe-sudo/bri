@@ -11,10 +11,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Frontend (planned)
+# Frontend build artifacts
 node_modules/
 .next/
 out/
+*.tsbuildinfo
+web/next-env.d.ts
 
 # Local data, uploads, and databases
 storage/
