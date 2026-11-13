@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +14,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from bri.access.policy import Principal, Resource, is_authorized
@@ -23,23 +25,44 @@ from bri.api.catalog import (
     SyntheticOrganization,
     load_catalog,
 )
+from bri.api.authentication import (
+    AuthenticationRejected,
+    AuthenticationUnavailable,
+    AuthenticatedIdentity,
+    SupabaseTokenVerifier,
+)
 from bri.api.database import Database, DatabaseUnavailable, TenantSession
 from bri.knowledge.query import EvidenceCitation, KnowledgeItem, answer_question
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_REQUEST_LOG = logging.getLogger("bri.api.request")
 
 
 @dataclass(frozen=True, slots=True)
 class ApiSettings:
     environment: str = ""
     dev_auth_enabled: bool = False
+    auth_mode: str = ""
     supabase_url: str = field(default="", repr=False)
+    supabase_publishable_key: str = field(default="", repr=False)
     database_url: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
-        if self.dev_auth_enabled and self.environment.strip().lower() != "development":
+        mode = self.auth_mode.strip().lower()
+        environment = self.environment.strip().lower()
+        if not mode:
+            mode = "synthetic" if self.dev_auth_enabled and environment == "development" else "disabled"
+            object.__setattr__(self, "auth_mode", mode)
+        if mode not in {"disabled", "synthetic", "supabase"}:
+            raise ValueError("BRI_AUTH_MODE must be disabled, synthetic, or supabase")
+        if self.dev_auth_enabled != (mode == "synthetic"):
+            raise ValueError("synthetic auth mode and BRI_DEV_AUTH_ENABLED must agree")
+        if mode == "synthetic" and environment != "development":
             raise ValueError("synthetic authentication can only be enabled in development")
+        if mode == "supabase" and environment != "hosted-development":
+            raise ValueError("Supabase authentication is hosted-development only until a production project is approved")
+        object.__setattr__(self, "auth_mode", mode)
 
     @classmethod
     def from_environment(cls) -> ApiSettings:
@@ -47,13 +70,34 @@ class ApiSettings:
         return cls(
             environment=os.environ.get("BRI_ENVIRONMENT", ""),
             dev_auth_enabled=os.environ.get("BRI_DEV_AUTH_ENABLED", "").strip().lower() == "true",
+            auth_mode=os.environ.get("BRI_AUTH_MODE", ""),
             supabase_url=os.environ.get("SUPABASE_URL", ""),
+            supabase_publishable_key=os.environ.get("SUPABASE_PUBLISHABLE_KEY", ""),
             database_url=os.environ.get("DATABASE_URL", ""),
         )
 
 
 class DatabaseProtocol(Protocol):
     def healthcheck(self) -> None: ...
+
+    def resolve_authenticated_principal(
+        self,
+        auth_user_id: str,
+        issuer: str,
+        subject: str,
+    ) -> Principal | None: ...
+
+    def auth_session_is_active(self, auth_user_id: str, session_id: str) -> bool: ...
+
+    def start_auth_session(
+        self,
+        auth_user_id: str,
+        issuer: str,
+        subject: str,
+        session_id: str,
+    ) -> datetime | None: ...
+
+    def revoke_auth_session(self, auth_user_id: str, session_id: str) -> bool: ...
 
     def tenant_context(self, tenant_id: str) -> ContextManager[TenantSession]: ...
 
@@ -382,23 +426,40 @@ def create_app(
     settings: ApiSettings | None = None,
     database: DatabaseProtocol | None = None,
     catalog: SyntheticCatalog | None = None,
+    token_verifier: Any | None = None,
 ) -> FastAPI:
     active_settings = settings or ApiSettings.from_environment()
     active_database = database or Database(
         supabase_url=active_settings.supabase_url,
         database_url=active_settings.database_url,
     )
+    active_token_verifier = token_verifier
+    if active_settings.auth_mode == "supabase" and active_token_verifier is None:
+        active_token_verifier = SupabaseTokenVerifier(
+            active_settings.supabase_url,
+            active_settings.supabase_publishable_key,
+        )
     active_catalog = catalog or (
-        load_catalog() if active_settings.dev_auth_enabled else SyntheticCatalog({}, {})
+        load_catalog() if active_settings.auth_mode == "synthetic" else SyntheticCatalog({}, {})
     )
 
-    app = FastAPI(
-        title="BRI Development API",
-        version="0.1.0",
-        description=(
+    if active_settings.auth_mode == "supabase":
+        api_title = "BRI Hosted Development API"
+        api_description = "Supabase-authenticated API with BRI-managed tenant and resource authorization."
+    elif active_settings.auth_mode == "synthetic":
+        api_title = "BRI Development API"
+        api_description = (
             "Development-only API using synthetic identities and PostgreSQL-backed knowledge. "
             "Synthetic identity selection is local-only and is not production authentication."
-        ),
+        )
+    else:
+        api_title = "BRI API — authentication disabled"
+        api_description = "Authentication is disabled; protected routes are unavailable."
+
+    app = FastAPI(
+        title=api_title,
+        version="0.1.0",
+        description=api_description,
         openapi_tags=[
             {"name": "health", "description": "Restricted-role database readiness."},
             {"name": "organizations", "description": "Read only exact-scope organizational structures."},
@@ -408,6 +469,35 @@ def create_app(
     app.state.settings = active_settings
     app.state.database = active_database
     app.state.catalog = active_catalog
+    app.state.token_verifier = active_token_verifier
+
+    @app.middleware("http")
+    async def safe_request_observability(request: Request, call_next):
+        request_id = str(uuid4())
+        request.state.request_id = request_id
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            _REQUEST_LOG.error(
+                "request_failed request_id=%s method=%s error_type=%s duration_ms=%.1f",
+                request_id,
+                request.method,
+                type(exc).__name__,
+                elapsed_ms,
+            )
+            raise
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        response.headers["X-Request-ID"] = request_id
+        _REQUEST_LOG.info(
+            "request_completed request_id=%s method=%s status=%s duration_ms=%.1f",
+            request_id,
+            request.method,
+            response.status_code,
+            elapsed_ms,
+        )
+        return response
 
     @app.exception_handler(DatabaseUnavailable)
     async def database_unavailable_handler(request: Request, exc: DatabaseUnavailable) -> JSONResponse:
@@ -416,6 +506,33 @@ def create_app(
             content={"status": "unavailable", "database": "unavailable"},
         )
 
+    async def verify_remote_identity(
+        request: Request,
+        authorization: str | None,
+        x_dev_identity: str | None,
+    ) -> AuthenticatedIdentity:
+        if active_settings.auth_mode != "supabase":
+            raise HTTPException(status_code=404, detail="Remote authentication is not enabled")
+        if x_dev_identity is not None:
+            raise HTTPException(status_code=400, detail="Development identity headers are not accepted by hosted APIs")
+        if "x-tenant-id" in request.headers or "x-bri-tenant-context" in request.headers or "tenant_id" in request.query_params:
+            raise HTTPException(status_code=400, detail="Tenant selection is server-controlled")
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="A valid Supabase access token is required")
+        access_token = authorization.removeprefix("Bearer ")
+        if not access_token or " " in access_token:
+            raise HTTPException(status_code=401, detail="A valid Supabase access token is required")
+        if active_token_verifier is None:
+            raise HTTPException(status_code=503, detail="Authentication is not configured")
+        try:
+            identity: AuthenticatedIdentity = await active_token_verifier.verify(access_token)
+        except AuthenticationRejected as exc:
+            raise HTTPException(status_code=401, detail="Authentication was rejected") from exc
+        except AuthenticationUnavailable as exc:
+            raise HTTPException(status_code=503, detail="Authentication service is unavailable") from exc
+        request.state.authenticated_identity = identity
+        return identity
+
     async def current_principal(
         request: Request,
         x_dev_identity: str | None = Header(
@@ -423,20 +540,37 @@ def create_app(
             alias="X-Dev-Identity",
             description="Synthetic fixture identity; local development only.",
         ),
+        authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> Principal:
-        if "x-tenant-id" in request.headers or "tenant_id" in request.query_params:
+        if "x-tenant-id" in request.headers or "x-bri-tenant-context" in request.headers or "tenant_id" in request.query_params:
             raise HTTPException(status_code=400, detail="Tenant selection is server-controlled")
         if request.method in {"GET", "HEAD"} and await request.body():
             raise HTTPException(status_code=400, detail="Request bodies are not accepted on read endpoints")
-        if not active_settings.dev_auth_enabled or active_settings.environment.strip().lower() != "development":
-            raise HTTPException(status_code=503, detail="Development identity adapter is disabled")
-        if not _is_loopback(request):
-            raise HTTPException(status_code=403, detail="Development identities are restricted to loopback clients")
-        if not x_dev_identity:
-            raise HTTPException(status_code=401, detail="A synthetic development identity is required")
-        principal = active_catalog.principals.get(x_dev_identity)
+
+        if active_settings.auth_mode == "synthetic":
+            if authorization is not None:
+                raise HTTPException(status_code=400, detail="Bearer authentication is disabled in local synthetic mode")
+            if not _is_loopback(request):
+                raise HTTPException(status_code=403, detail="Development identities are restricted to loopback clients")
+            if not x_dev_identity:
+                raise HTTPException(status_code=401, detail="A synthetic development identity is required")
+            principal = active_catalog.principals.get(x_dev_identity)
+            if principal is None:
+                raise HTTPException(status_code=401, detail="Unknown synthetic development identity")
+            return principal
+
+        if active_settings.auth_mode != "supabase":
+            raise HTTPException(status_code=503, detail="Authentication is not configured")
+        identity = await verify_remote_identity(request, authorization, x_dev_identity)
+        principal = active_database.resolve_authenticated_principal(
+            identity.auth_user_id,
+            identity.issuer,
+            identity.auth_user_id,
+        )
         if principal is None:
-            raise HTTPException(status_code=401, detail="Unknown synthetic development identity")
+            raise HTTPException(status_code=403, detail="No active BRI identity mapping exists")
+        if not active_database.auth_session_is_active(identity.auth_user_id, identity.session_id):
+            raise HTTPException(status_code=401, detail="BRI session is inactive or expired")
         return principal
 
     def tenant_session(
@@ -444,7 +578,10 @@ def create_app(
         principal: Principal = Depends(current_principal),
     ) -> Iterator[TenantSession]:
         if len(principal.tenant_ids) != 1:
-            raise HTTPException(status_code=403, detail="Synthetic identity must map to exactly one tenant")
+            raise HTTPException(
+                status_code=403,
+                detail="A server-resolved tenant context is required for this identity",
+            )
         tenant_id = next(iter(principal.tenant_ids))
         try:
             with request.app.state.database.tenant_context(tenant_id) as session:
@@ -456,6 +593,8 @@ def create_app(
         request: Request,
         principal: Principal = Depends(current_principal),
     ) -> Iterator[TenantSession]:
+        if active_settings.auth_mode == "supabase":
+            raise HTTPException(status_code=403, detail="Remote development API is read-only")
         if len(principal.tenant_ids) != 1:
             raise HTTPException(status_code=403, detail="Synthetic identity must map to exactly one tenant")
         tenant_id = next(iter(principal.tenant_ids))
@@ -469,7 +608,65 @@ def create_app(
         if not _has_action(principal, action):
             raise HTTPException(status_code=403, detail="Required permission is missing")
 
-    @app.get("/health", tags=["health"], summary="Check restricted-role database readiness")
+    @app.post("/v1/auth/session", status_code=201, tags=["identity"], summary="Start an eight-hour BRI session after Supabase TOTP verification")
+    async def start_auth_session(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+        x_dev_identity: str | None = Header(default=None, alias="X-Dev-Identity"),
+    ) -> dict[str, str]:
+        if await request.body():
+            raise HTTPException(status_code=400, detail="Session requests do not accept a body")
+        identity = await verify_remote_identity(request, authorization, x_dev_identity)
+        principal = active_database.resolve_authenticated_principal(
+            identity.auth_user_id,
+            identity.issuer,
+            identity.auth_user_id,
+        )
+        if principal is None:
+            raise HTTPException(status_code=403, detail="No active BRI identity mapping exists")
+        expires_at = active_database.start_auth_session(
+            identity.auth_user_id,
+            identity.issuer,
+            identity.auth_user_id,
+            identity.session_id,
+        )
+        if expires_at is None:
+            raise HTTPException(status_code=403, detail="BRI session cannot be started for this identity")
+        return {"status": "active", "expires_at": expires_at.isoformat()}
+
+    @app.delete("/v1/auth/session", status_code=204, tags=["identity"], summary="Revoke the current BRI session")
+    async def end_auth_session(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+        x_dev_identity: str | None = Header(default=None, alias="X-Dev-Identity"),
+    ) -> Response:
+        if await request.body():
+            raise HTTPException(status_code=400, detail="Session requests do not accept a body")
+        identity = await verify_remote_identity(request, authorization, x_dev_identity)
+        principal = active_database.resolve_authenticated_principal(
+            identity.auth_user_id,
+            identity.issuer,
+            identity.auth_user_id,
+        )
+        if principal is None:
+            raise HTTPException(status_code=403, detail="No active BRI identity mapping exists")
+        active_database.revoke_auth_session(identity.auth_user_id, identity.session_id)
+        return Response(status_code=204)
+
+    @app.get("/v1/me/tenants", tags=["identity"], summary="List the caller's explicitly active BRI tenant memberships")
+    def my_tenants(principal: Principal = Depends(current_principal)) -> dict[str, list[str]]:
+        return {"tenant_ids": sorted(principal.tenant_ids)}
+
+    @app.get("/live", tags=["health"], summary="Process liveness without dependency checks")
+    def liveness() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/ready", tags=["health"], summary="Check restricted-role database readiness")
+    def readiness() -> dict[str, str]:
+        active_database.healthcheck()
+        return {"status": "ready", "database": "ok"}
+
+    @app.get("/health", tags=["health"], summary="Legacy alias for restricted-role database readiness")
     def health() -> dict[str, str]:
         active_database.healthcheck()
         return {"status": "ok", "database": "ok"}
