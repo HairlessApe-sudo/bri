@@ -34,7 +34,7 @@ If evidence, access, shield status or policy cannot be established, fail closed,
 
 Define capability interfaces, not only a generic “chat” API: text generation, structured output, embeddings, reranking, OCR/vision and tool calling when required. Declare each provider/model’s capabilities, limits, data handling, supported formats and version. Routing is constrained by deployment, tenant, purpose, classification, cost/latency policy and explicit approvals.
 
-Credentials are external secret references. Responses record provider/model/config version, prompt/template version where relevant, retrieval/index generation, timings and usage without storing sensitive prompt content by default. Fallback is not automatic across data-handling boundaries. Embedding model changes create a new index generation and controlled reindex.
+Credentials are external secret references. Responses record provider/model/config version, prompt/template version where relevant, retrieval/index generation, timings and usage without storing sensitive prompt content by default. Assignment 07C now provides a standalone, versioned platform/client prompt component with structured layer provenance; it is not yet integrated with this orchestration lifecycle or a provider. See `prompt-management.md`. Fallback is not automatic across data-handling boundaries. Embedding model changes create a new index generation and controlled reindex.
 
 ## 4. Evidence and response contract
 

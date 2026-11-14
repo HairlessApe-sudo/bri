@@ -55,6 +55,18 @@ Implemented locally as a standalone domain extension:
 
 Remaining integration work: the in-memory stores are not durable; production needs separately approved tenant-isolated persistence with atomic version allocation and durable history. BRI's database role-permission mapping/API authorization path must issue the new exact permission grants and invoke these contracts; no database migration or API route was included. The Shield/Gateway boundary remains unimplemented.
 
+## Assignment 07C — Versioned Prompt Management (2026-11-14)
+
+Implemented as an independent backend component in `src/bri/prompts/`:
+
+- Separate BRS platform and tenant client prompt layers with immutable version snapshots, content hashes, authorship/time/change metadata, prior-version references, comparison, approval, activation and restore-as-new-version.
+- `PromptRepository` abstraction plus thread-safe in-memory reference store uses expected-latest and expected-active compare-and-swap checks. Stale concurrent writes fail rather than overwrite. Append-only audit events record draft/approval/activation/deactivation metadata and hashes without prompt bodies.
+- Authorization uses explicit grants: BRS platform prompt management, tenant-scoped client prompt management/read, explicit tenant-scoped BRS prompt read, and separately scoped SuperAdmin tenant-prompt administration. User/SuperUser/client Admin cannot modify the BRS prompt; role names alone confer no authority.
+- Deterministic assembler returns distinct ordered trusted-platform and untrusted-client sections from one repository snapshot, with provenance for both active versions; missing active prompt blocks assembly. Validation caps prompt content at 32,000 characters and rejects malformed/control-character content and common credential patterns.
+- Verification: 15 prompt-management tests passed; full Python suite ran 221 tests (209 passed; 12 opt-in DB tests skipped). `compileall` and `git diff --check` passed. No external provider, Gateway, API/UI route, migration, deployment or push was used.
+
+Remaining integration: connect verified role-permission mappings and authenticated tenant context; implement a durable PostgreSQL repository with RLS, append-only history and transactional CAS; expose Admin/API workflows; integrate with AI Gateway while preserving trust-separated channels and checking all prompt/input content through the independent Privacy Shield. Prompt injection is not eliminated by assembly. The in-memory repository is not production durable.
+
 Not complete or not verified:
 
 - Managed Supabase compatibility review: migration 0006 contains no `CREATE EXTENSION`; `gen_random_uuid()` is PostgreSQL built-in, and the migration uses PL/pgSQL plus standard tables/indexes/triggers/RLS/grants, all exercised on local PostgreSQL 16. It assumes `bri`, `bri_app` and `bri_migrator` already exist; repository bootstrap creates `bri` owned by `bri_migrator`, and the runner requires a login migration role with no superuser/BYPASSRLS/CREATEDB/CREATEROLE/inheritance and the expected connection limit/provider-role edge. The temporary tenant-read policy supports the forced-RLS backfill. Supabase notes PostgreSQL 15+ removes default PUBLIC database CREATE, so bootstrap must pre-create the schema; 0006 does not rely on database-level CREATE. No shared Supabase target/version/role catalog was queried, so exact managed-project compatibility remains unverified; do not apply there without separate target review and approval.
