@@ -21,6 +21,7 @@ from bri.privacy.models import (
     ProcessingDestination,
     ProcessingPurpose,
     PolicyAction,
+    SignatureVersionProvenance,
     TenantContext,
     VerifiedShieldedContent,
 )
@@ -192,6 +193,7 @@ class ShieldAttestor:
         platform_policy_version: str,
         detection_counts: tuple[DetectionCount, ...],
         issued_at: datetime | None = None,
+        signature_versions: SignatureVersionProvenance | None = None,
     ) -> GatewayEnvelope:
         now = issued_at or self._clock()
         if (
@@ -223,6 +225,7 @@ class ShieldAttestor:
             issued_at=now,
             expires_at=now + self._lifetime,
             attestation="",
+            signature_versions=signature_versions,
         )
         signature = self._sign(unsigned)
         return GatewayEnvelope(
@@ -276,6 +279,7 @@ class ShieldAttestor:
             destination=envelope.destination,
             decision=envelope.decision,
             sanitised_content=envelope.sanitised_content,
+            signature_versions=envelope.signature_versions,
         )
 
     def _valid_envelope(self, envelope: object, now: datetime) -> bool:
@@ -307,6 +311,7 @@ class ShieldAttestor:
             or envelope.expires_at - envelope.issued_at > self._lifetime
             or not isinstance(envelope.attestation, str)
             or not re.fullmatch(r"[0-9a-f]{64}", envelope.attestation)
+            or not _valid_signature_versions(envelope.signature_versions)
             or not isinstance(envelope.detection_counts, tuple)
             or any(
                 not isinstance(item, DetectionCount)
@@ -374,6 +379,13 @@ def _envelope_payload(envelope: GatewayEnvelope) -> bytes:
             ],
             "issued_at": envelope.issued_at.isoformat(),
             "expires_at": envelope.expires_at.isoformat(),
+            "signature_versions": None if envelope.signature_versions is None else {
+                "engine_version": envelope.signature_versions.engine_version,
+                "global_package_version": envelope.signature_versions.global_package_version,
+                "regional_package_versions": list(envelope.signature_versions.regional_package_versions),
+                "tenant_signature_version": envelope.signature_versions.tenant_signature_version,
+                "effective_configuration_version": envelope.signature_versions.effective_configuration_version,
+            },
         }
     )
 
@@ -382,6 +394,29 @@ def _canonical(value: object) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8", "strict")
+
+
+def _valid_signature_versions(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, SignatureVersionProvenance):
+        return False
+    if not all(_valid_id(item) for item in (
+        value.engine_version,
+        value.global_package_version,
+        value.tenant_signature_version,
+        value.effective_configuration_version,
+    )):
+        return False
+    if not isinstance(value.regional_package_versions, tuple):
+        return False
+    pairs = value.regional_package_versions
+    return (
+        all(isinstance(pair, tuple) and len(pair) == 2 and _valid_id(pair[0]) and _valid_id(pair[1]) for pair in pairs)
+        and tuple(sorted(pairs)) == pairs
+        and len({pair[0] for pair in pairs}) == len(pairs)
+        and "global" not in {pair[0] for pair in pairs}
+    )
 
 
 def _valid_id(value: object) -> bool:

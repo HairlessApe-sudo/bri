@@ -76,7 +76,11 @@ class SignatureDetector:
         *,
         tenant_signatures: Sequence[TenantSignature] = (),
         tenant_terms: Sequence[str] = (),
+        jurisdiction: str | None = "NL",
     ) -> None:
+        if jurisdiction not in {None, "NL", "AU"}:
+            raise ValueError("unsupported_jurisdiction")
+        self._jurisdiction = jurisdiction
         self._tenant_signatures = tuple(tenant_signatures)
         if any(not isinstance(term, str) or not term or len(term) > 256 for term in tenant_terms):
             raise ValueError("invalid_tenant_signature")
@@ -87,16 +91,18 @@ class SignatureDetector:
             raise TypeError("content_must_be_text")
         findings: set[Detection] = set()
 
-        for match in _BSN_CANDIDATE.finditer(text):
-            digits = re.sub(r"[^0-9]", "", match.group(0))
-            if _valid_bsn(digits):
-                findings.add(Detection(DetectionCategory.BSN, match.start(), match.end()))
+        if self._jurisdiction == "NL":
+            for match in _BSN_CANDIDATE.finditer(text):
+                digits = re.sub(r"[^0-9]", "", match.group(0))
+                if _valid_bsn(digits):
+                    findings.add(Detection(DetectionCategory.BSN, match.start(), match.end()))
 
         for match in _EMAIL.finditer(text):
             findings.add(Detection(DetectionCategory.EMAIL, match.start(), match.end()))
 
-        for match in _DUTCH_PHONE.finditer(text):
-            findings.add(Detection(DetectionCategory.PHONE, match.start(), match.end()))
+        if self._jurisdiction == "NL":
+            for match in _DUTCH_PHONE.finditer(text):
+                findings.add(Detection(DetectionCategory.PHONE, match.start(), match.end()))
         for start, end in _international_phone_spans(text):
             findings.add(Detection(DetectionCategory.PHONE, start, end))
 
@@ -115,10 +121,11 @@ class SignatureDetector:
                     )
                 )
 
-        for match in _DUTCH_ADDRESS.finditer(text):
-            findings.add(
-                Detection(DetectionCategory.POSTAL_ADDRESS, match.start(), match.end())
-            )
+        if self._jurisdiction == "NL":
+            for match in _DUTCH_ADDRESS.finditer(text):
+                findings.add(
+                    Detection(DetectionCategory.POSTAL_ADDRESS, match.start(), match.end())
+                )
 
         for match in _DOB_CONTEXT.finditer(text):
             raw_date = match.group("date")
@@ -130,6 +137,13 @@ class SignatureDetector:
                         match.end("date"),
                     )
                 )
+
+        if self._jurisdiction == "AU":
+            pattern = re.compile(r"(?i)\bTFN\s*[:#]?\s*(?P<number>(?:[0-9][ \t-]?){8}[0-9])\b")
+            for match in pattern.finditer(text):
+                digits = re.sub(r"[^0-9]", "", match.group("number"))
+                if _valid_australian_tfn(digits):
+                    findings.add(Detection(DetectionCategory.TAX_FILE_NUMBER, match.start("number"), match.end("number")))
 
         for signature in self._tenant_signatures:
             flags = 0 if signature.case_sensitive else re.IGNORECASE
@@ -202,6 +216,13 @@ def _valid_bsn(digits: str) -> bool:
         int(digit) * weight for digit, weight in zip(digits[:8], range(9, 1, -1))
     ) - int(digits[8])
     return total > 0 and total % 11 == 0
+
+
+def _valid_australian_tfn(digits: str) -> bool:
+    if not re.fullmatch(r"[0-9]{9}", digits):
+        return False
+    weights = (1, 4, 3, 7, 5, 8, 6, 9, 10)
+    return sum(int(digit) * weight for digit, weight in zip(digits, weights)) % 11 == 0
 
 
 def _valid_iban(candidate: str) -> bool:

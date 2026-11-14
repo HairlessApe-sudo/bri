@@ -16,6 +16,7 @@ class DetectionCategory(str, Enum):
     POSTAL_ADDRESS = "postal_address"
     DATE_OF_BIRTH = "date_of_birth"
     TENANT_SENSITIVE = "tenant_sensitive"
+    TAX_FILE_NUMBER = "tax_file_number"
 
 
 class InputType(str, Enum):
@@ -137,6 +138,15 @@ class AuditSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SignatureVersionProvenance:
+    engine_version: str
+    global_package_version: str
+    regional_package_versions: tuple[tuple[str, str], ...]
+    tenant_signature_version: str
+    effective_configuration_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class GatewayEnvelope:
     processing_id: str
     tenant_id: str
@@ -154,6 +164,7 @@ class GatewayEnvelope:
     issued_at: datetime
     expires_at: datetime
     attestation: str
+    signature_versions: SignatureVersionProvenance | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +177,7 @@ class VerifiedShieldedContent:
     destination: ProcessingDestination
     decision: PolicyAction
     sanitised_content: str = field(repr=False)
+    signature_versions: SignatureVersionProvenance | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,3 +194,4 @@ class ProcessingResult:
     audit_summary: AuditSummary
     failure_reason: str | None
     gateway_envelope: GatewayEnvelope | None
+    signature_versions: SignatureVersionProvenance | None = None

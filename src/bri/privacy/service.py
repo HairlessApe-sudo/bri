@@ -24,6 +24,7 @@ from bri.privacy.models import (
     ProcessingRequest,
     ProcessingResult,
     ProcessingStatus,
+    SignatureVersionProvenance,
     TenantSignature,
 )
 from bri.privacy.policy import (
@@ -32,6 +33,11 @@ from bri.privacy.policy import (
     PolicyEngine,
     PolicyProvider,
     TenantPolicy,
+)
+from bri.privacy.regional import (
+    RegionalSignatureDetector,
+    ResolvedSignatureConfiguration,
+    SignatureConfigurationProvider,
 )
 
 
@@ -46,6 +52,7 @@ _REDACTION_MARKERS = {
     DetectionCategory.POSTAL_ADDRESS: "[POSTAL_ADDRESS_REDACTED]",
     DetectionCategory.DATE_OF_BIRTH: "[DATE_OF_BIRTH_REDACTED]",
     DetectionCategory.TENANT_SENSITIVE: "[TENANT_SENSITIVE_REDACTED]",
+    DetectionCategory.TAX_FILE_NUMBER: "[TAX_FILE_NUMBER_REDACTED]",
 }
 
 
@@ -100,6 +107,7 @@ class PrivacyShieldService:
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
         max_text_chars: int = _MAX_TEXT_CHARS,
+        signature_configuration_provider: SignatureConfigurationProvider | None = None,
     ) -> None:
         if not isinstance(max_text_chars, int) or not 1 <= max_text_chars <= _MAX_TEXT_CHARS:
             raise ValueError("invalid_shield_configuration")
@@ -108,6 +116,7 @@ class PrivacyShieldService:
             or not callable(getattr(policy_provider, "load", None))
             or not callable(getattr(audit_sink, "record", None))
             or not callable(getattr(attestor, "issue", None))
+            or (signature_configuration_provider is not None and not callable(getattr(signature_configuration_provider, "load", None)))
         ):
             raise ValueError("invalid_shield_configuration")
         self._context_authority = context_authority
@@ -121,9 +130,11 @@ class PrivacyShieldService:
                 tenant_terms=terms,
             )
         )
+        self._custom_detector_factory = detector_factory is not None
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._max_text_chars = max_text_chars
+        self._signature_configuration_provider = signature_configuration_provider
 
     def process(self, request: ProcessingRequest) -> ProcessingResult:
         processing_id = self._new_processing_id()
@@ -267,8 +278,31 @@ class PrivacyShieldService:
                 None,
             )
 
+        if self._signature_configuration_provider is None:
+            return self._finish_blocked(
+                processing_id, now, "signature_configuration_unavailable", tenant_id,
+                request.input_type, request.purpose, request.destination, (), policy, None,
+            )
+
+        signature_versions = None
         try:
-            detector = self._detector_factory(policy.signatures, policy.sensitive_terms)
+            resolved = self._signature_configuration_provider.load(tenant_id)
+            if not isinstance(resolved, ResolvedSignatureConfiguration) or resolved.config.tenant_id != tenant_id:
+                raise ValueError("signature_configuration_unavailable")
+            effective = resolved.effective
+            signature_versions = SignatureVersionProvenance(
+                engine_version=effective.engine_version,
+                global_package_version=effective.package_versions["global"],
+                regional_package_versions=tuple(sorted((key, value) for key, value in effective.package_versions.items() if key != "global")),
+                tenant_signature_version=effective.tenant_signature_version,
+                effective_configuration_version=effective.configuration_version,
+            )
+            if policy.signatures or policy.sensitive_terms:
+                raise ValueError("legacy_signature_configuration_unversioned")
+            if self._custom_detector_factory:
+                detector = self._detector_factory(policy.signatures, policy.sensitive_terms)
+            else:
+                detector = RegionalSignatureDetector(resolved.config, resolved.registry, tenant_signatures=resolved.tenant_signatures)
             findings = detector.detect(request.text)
             if not isinstance(findings, (tuple, list)) or any(
                 not isinstance(item, Detection)
@@ -359,6 +393,7 @@ class PrivacyShieldService:
                     platform_policy_version=self._engine.platform_policy.version,
                     detection_counts=counts,
                     issued_at=now,
+                    signature_versions=signature_versions,
                 )
             except Exception:
                 return self._finish_blocked(
@@ -414,6 +449,7 @@ class PrivacyShieldService:
                 failed_summary,
                 "audit_unavailable",
                 None,
+                signature_versions,
             )
 
         return ProcessingResult(
@@ -429,6 +465,7 @@ class PrivacyShieldService:
             summary,
             None,
             envelope,
+            signature_versions,
         )
 
     def _finish_blocked(

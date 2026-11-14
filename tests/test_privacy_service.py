@@ -28,6 +28,13 @@ from bri.privacy.policy import (
     TenantPolicy,
 )
 from bri.privacy.service import InMemoryAuditSink, PrivacyShieldService
+from bri.privacy.regional import (
+    InMemoryTenantSignatureStore,
+    ManagedTenantSignature,
+    MappingSignatureConfigurationProvider,
+    PrivacyShieldConfig,
+    RegionalSignatureRegistry,
+)
 
 
 class PrivacyShieldServiceTests(unittest.TestCase):
@@ -37,11 +44,17 @@ class PrivacyShieldServiceTests(unittest.TestCase):
         self.attestor = ShieldAttestor(b"a" * 32, clock=lambda: self.now)
         self.policy = TenantPolicy("tenant-a", "tenant-policy", "3", ())
         self.audit = InMemoryAuditSink()
+        self.signature_store = InMemoryTenantSignatureStore()
+        self.signature_provider = MappingSignatureConfigurationProvider(
+            {"tenant-a": PrivacyShieldConfig("tenant-a", "NL")},
+            RegionalSignatureRegistry.with_defaults(), self.signature_store,
+        )
         self.service = PrivacyShieldService(
             context_authority=self.authority,
             policy_provider=MappingPolicyProvider({"tenant-a": self.policy}),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-0001",
         )
@@ -126,6 +139,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             ),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-0002",
         )
@@ -156,6 +170,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             ),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-0003",
         )
@@ -279,6 +294,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             ),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-allow-floor",
         )
@@ -289,21 +305,25 @@ class PrivacyShieldServiceTests(unittest.TestCase):
         self.assertEqual(result.sanitised_content, "BSN [BSN_REDACTED]")
 
     def test_uses_tenant_specific_literal_signature(self):
-        from bri.privacy.models import TenantSignature
-
+        self.signature_store.append(
+            "tenant-a",
+            (
+                ManagedTenantSignature("project-tag", "project-omega-42"),
+                ManagedTenantSignature("internal-term", "intern gebruik"),
+            ),
+        )
         policy = TenantPolicy(
             "tenant-a",
             "tenant-policy",
             "4",
             (),
-            (TenantSignature("project-tag", "project-omega-42"),),
-            ("intern gebruik",),
         )
         self.service = PrivacyShieldService(
             context_authority=self.authority,
             policy_provider=MappingPolicyProvider({"tenant-a": policy}),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-tenant-signature",
         )
@@ -319,12 +339,29 @@ class PrivacyShieldServiceTests(unittest.TestCase):
         self.assertNotIn("project-omega-42", repr(policy))
         self.assertNotIn("intern gebruik", repr(policy))
 
+    def test_missing_signature_configuration_fails_closed(self):
+        service = PrivacyShieldService(
+            context_authority=self.authority,
+            policy_provider=MappingPolicyProvider({"tenant-a": self.policy}),
+            audit_sink=self.audit,
+            attestor=self.attestor,
+            clock=lambda: self.now,
+        )
+
+        result = service.process(self.request("synthetic text"))
+
+        self.assertEqual(result.status, ProcessingStatus.BLOCKED)
+        self.assertEqual(result.failure_reason, "signature_configuration_unavailable")
+        self.assertIsNone(result.sanitised_content)
+        self.assertIsNone(result.gateway_envelope)
+
     def test_missing_policy_never_falls_back_to_another_tenant(self):
         self.service = PrivacyShieldService(
             context_authority=self.authority,
             policy_provider=MappingPolicyProvider({}),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-no-policy",
         )
@@ -371,6 +408,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             policy_provider=MappingPolicyProvider({"tenant-a": self.policy}),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
         )
 
@@ -437,6 +475,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             policy_provider=MappingPolicyProvider({"tenant-a": self.policy}),
             audit_sink=FailingAuditSink(),
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
             id_factory=lambda: "process-audit-failure",
         )
@@ -458,6 +497,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             policy_provider=FailingPolicyProvider(),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
         )
 
@@ -478,6 +518,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             policy_provider=MappingPolicyProvider({"tenant-a": self.policy}),
             audit_sink=self.audit,
             attestor=self.attestor,
+            signature_configuration_provider=self.signature_provider,
             detector_factory=lambda signatures, terms: FailingDetector(),
             clock=lambda: self.now,
         )
@@ -502,6 +543,7 @@ class PrivacyShieldServiceTests(unittest.TestCase):
             policy_provider=MappingPolicyProvider({"tenant-a": self.policy}),
             audit_sink=self.audit,
             attestor=FailingAttestor(),
+            signature_configuration_provider=self.signature_provider,
             clock=lambda: self.now,
         )
 
