@@ -1,1 +1,1 @@
-"""Privacy Shield detection and policy primitives."""
+"""Privacy Shield detection, policy and durable repository primitives."""

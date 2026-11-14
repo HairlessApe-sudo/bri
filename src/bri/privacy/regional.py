@@ -10,7 +10,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence, cast
 
 from bri.access.policy import Principal, Resource, is_authorized
 from bri.privacy.detection import SignatureDetector
@@ -111,9 +111,23 @@ class SignatureConfigurationProvider(Protocol):
         ...
 
 
+class ShieldConfigurationStoreProtocol(Protocol):
+    def current(self, tenant_id: str) -> ShieldConfigurationRevision | None: ...
+    def history(self, tenant_id: str) -> tuple[ShieldConfigurationRevision, ...]: ...
+    def append(self, config: PrivacyShieldConfig) -> ShieldConfigurationRevision: ...
+    def append_version(self, config: PrivacyShieldConfig, expected_version: int, *, author_id: str = "system", restored_from_version: int | None = None) -> ShieldConfigurationRevision: ...
+
+
+class TenantSignatureStoreProtocol(Protocol):
+    def current(self, tenant_id: str) -> TenantSignatureRevision: ...
+    def history(self, tenant_id: str) -> tuple[TenantSignatureRevision, ...]: ...
+    def append(self, tenant_id: str, signatures: Sequence[ManagedTenantSignature]) -> TenantSignatureRevision: ...
+    def append_version(self, tenant_id: str, signatures: Sequence[ManagedTenantSignature], expected_version: int, *, author_id: str = "system", restored_from_version: int | None = None) -> TenantSignatureRevision: ...
+
+
 class MappingSignatureConfigurationProvider:
-    """Explicit in-memory provider; missing tenant config is never defaulted."""
-    def __init__(self, configs: Mapping[str, PrivacyShieldConfig] | InMemoryShieldConfigurationStore, registry: RegionalSignatureRegistry, store: InMemoryTenantSignatureStore | None = None) -> None:
+    """Explicit configuration provider; missing tenant config is never defaulted."""
+    def __init__(self, configs: Mapping[str, PrivacyShieldConfig] | ShieldConfigurationStoreProtocol, registry: RegionalSignatureRegistry, store: TenantSignatureStoreProtocol | None = None) -> None:
         self._configs = dict(configs) if isinstance(configs, Mapping) else None
         self._configuration_store = None if isinstance(configs, Mapping) else configs
         self._registry = registry
@@ -262,13 +276,20 @@ class InMemoryTenantSignatureStore:
 
     def append(self, tenant_id: str, signatures: Sequence[ManagedTenantSignature]) -> TenantSignatureRevision:
         current = self.current(tenant_id)
+        return self.append_version(tenant_id, signatures, current.version)
+
+    def append_version(self, tenant_id: str, signatures: Sequence[ManagedTenantSignature], expected_version: int, *, author_id: str = "local-test", restored_from_version: int | None = None) -> TenantSignatureRevision:
+        del author_id, restored_from_version
+        current = self.current(tenant_id)
+        if current.version != expected_version:
+            raise RuntimeError("signature_revision_conflict")
         revision = TenantSignatureRevision(tenant_id, current.version + 1, tuple(signatures))
         self._history.setdefault(tenant_id, []).append(revision)
         return revision
 
 
 class TenantSignatureManager:
-    def __init__(self, store: InMemoryTenantSignatureStore) -> None:
+    def __init__(self, store: TenantSignatureStoreProtocol) -> None:
         self._store = store
 
     def create(self, principal: Principal, tenant_id: str, signature: ManagedTenantSignature) -> TenantSignatureRevision:
@@ -277,7 +298,7 @@ class TenantSignatureManager:
             raise SignatureValidationError("invalid_signature")
         if any(item.signature_id == signature.signature_id for item in current.signatures):
             raise SignatureValidationError("signature_already_exists")
-        return self._store.append(tenant_id, (*current.signatures, signature))
+        return self._append(tenant_id, (*current.signatures, signature), current.version, principal.subject_id)
 
     def read(self, principal: Principal, tenant_id: str) -> tuple[ManagedTenantSignature, ...]:
         self._authorize_read(principal, tenant_id)
@@ -289,13 +310,13 @@ class TenantSignatureManager:
             raise SignatureValidationError("invalid_signature")
         if signature_id != replacement.signature_id or not any(item.signature_id == signature_id for item in current.signatures):
             raise SignatureValidationError("signature_not_found")
-        return self._store.append(tenant_id, tuple(replacement if item.signature_id == signature_id else item for item in current.signatures))
+        return self._append(tenant_id, tuple(replacement if item.signature_id == signature_id else item for item in current.signatures), current.version, principal.subject_id)
 
     def deactivate(self, principal: Principal, tenant_id: str, signature_id: str) -> TenantSignatureRevision:
         current = self._authorized_current(principal, tenant_id)
         if not any(item.signature_id == signature_id for item in current.signatures):
             raise SignatureValidationError("signature_not_found")
-        return self._store.append(tenant_id, tuple(ManagedTenantSignature(item.signature_id, item.pattern, item.category, item.case_sensitive, item.is_regex, False) if item.signature_id == signature_id else item for item in current.signatures))
+        return self._append(tenant_id, tuple(ManagedTenantSignature(item.signature_id, item.pattern, item.category, item.case_sensitive, item.is_regex, False) if item.signature_id == signature_id else item for item in current.signatures), current.version, principal.subject_id)
 
     def history(self, principal: Principal, tenant_id: str) -> tuple[TenantSignatureRevision, ...]:
         self._authorize_read(principal, tenant_id)
@@ -306,7 +327,7 @@ class TenantSignatureManager:
         source = next((item for item in self._store.history(tenant_id) if item.version == version), None)
         if source is None:
             raise SignatureValidationError("signature_version_not_found")
-        return self._store.append(tenant_id, source.signatures)
+        return self._append(tenant_id, source.signatures, self._store.current(tenant_id).version, principal.subject_id, restored_from=source.version)
 
     def test(self, principal: Principal, tenant_id: str, signature: ManagedTenantSignature, synthetic_text: str) -> tuple[Detection, ...]:
         self._authorize_read(principal, tenant_id)
@@ -321,6 +342,12 @@ class TenantSignatureManager:
             for match in compiled.finditer(synthetic_text)
             if match.end() > match.start()
         )
+
+    def _append(self, tenant_id: str, signatures: Sequence[ManagedTenantSignature], expected_version: int, author_id: str, *, restored_from: int | None = None) -> TenantSignatureRevision:
+        append_version = getattr(self._store, "append_version", None)
+        if callable(append_version):
+            return cast(TenantSignatureRevision, append_version(tenant_id, signatures, expected_version, author_id=author_id, restored_from_version=restored_from))
+        return self._store.append(tenant_id, signatures)
 
     def _authorized_current(self, principal: Principal, tenant_id: str) -> TenantSignatureRevision:
         self._authorize(principal, tenant_id)
@@ -368,8 +395,14 @@ class InMemoryShieldConfigurationStore:
 
     def append(self, config: PrivacyShieldConfig) -> ShieldConfigurationRevision:
         current = self.current(config.tenant_id)
-        expected = 1 if current is None else current.version + 1
-        if config.version != expected:
+        expected = 0 if current is None else current.version
+        return self.append_version(config, expected)
+
+    def append_version(self, config: PrivacyShieldConfig, expected_version: int, *, author_id: str = "local-test", restored_from_version: int | None = None) -> ShieldConfigurationRevision:
+        del author_id, restored_from_version
+        current = self.current(config.tenant_id)
+        latest = 0 if current is None else current.version
+        if latest != expected_version or config.version != latest + 1:
             raise ValueError("configuration_version_must_increase")
         revision = ShieldConfigurationRevision(config.tenant_id, config.version, config)
         self._history.setdefault(config.tenant_id, []).append(revision)
@@ -377,14 +410,18 @@ class InMemoryShieldConfigurationStore:
 
 
 class PrivacyShieldConfigurationManager:
-    def __init__(self, store: InMemoryShieldConfigurationStore) -> None:
+    def __init__(self, store: ShieldConfigurationStoreProtocol) -> None:
         self._store = store
 
     def configure(self, principal: Principal, tenant_id: str, primary_jurisdiction: str, additional_regions: tuple[str, ...] = ()) -> ShieldConfigurationRevision:
         self._authorize(principal, tenant_id)
         current = self._store.current(tenant_id)
         version = 1 if current is None else current.version + 1
-        return self._store.append(PrivacyShieldConfig(tenant_id, primary_jurisdiction, additional_regions, version))
+        config = PrivacyShieldConfig(tenant_id, primary_jurisdiction, additional_regions, version)
+        append_version = getattr(self._store, "append_version", None)
+        if callable(append_version):
+            return cast(ShieldConfigurationRevision, append_version(config, version - 1, author_id=principal.subject_id))
+        return self._store.append(config)
 
     def read(self, principal: Principal, tenant_id: str) -> ShieldConfigurationRevision | None:
         self._authorize_read(principal, tenant_id)
@@ -412,6 +449,12 @@ class PrivacyShieldConfigurationManager:
         original = next((item for item in self._store.history(tenant_id) if item.version == version), None)
         if original is None:
             raise ValueError("configuration_version_not_found")
+        current = self._store.current(tenant_id)
+        next_version = 1 if current is None else current.version + 1
+        restored = PrivacyShieldConfig(tenant_id, original.config.primary_jurisdiction, original.config.additional_regions, next_version)
+        append_version = getattr(self._store, "append_version", None)
+        if callable(append_version):
+            return cast(ShieldConfigurationRevision, append_version(restored, next_version - 1, author_id=principal.subject_id, restored_from_version=original.version))
         return self.configure(principal, tenant_id, original.config.primary_jurisdiction, original.config.additional_regions)
 
     @staticmethod

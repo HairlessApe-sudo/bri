@@ -1,5 +1,6 @@
 """Backend prompt management contracts and assembly."""
 
+from bri.prompts.postgres import PostgresPromptRepository
 from bri.prompts.management import (
     AssembledPrompt,
     InMemoryPromptRepository,
@@ -20,6 +21,7 @@ from bri.prompts.management import (
 __all__ = (
     "AssembledPrompt",
     "InMemoryPromptRepository",
+    "PostgresPromptRepository",
     "PromptAuditEvent",
     "PromptAuthorizationError",
     "PromptLayer",

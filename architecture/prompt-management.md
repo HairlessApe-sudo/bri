@@ -1,6 +1,6 @@
 # Versioned Prompt Management — Assignment 07C
 
-Status: standalone backend domain component. It is not connected to an API, AI Gateway, model provider, or durable database.
+Status: standalone backend domain component with a PostgreSQL repository adapter and migration 0007 validated on disposable PostgreSQL. It is not connected to an API, AI Gateway, or model provider.
 
 ## Purpose and boundaries
 
@@ -31,7 +31,7 @@ New versions begin as drafts. An authorized manager explicitly approves a versio
 
 Audit events are append-only metadata: action/status, version ID, actor, timestamp and content hash. Prompt bodies are not copied into audit events. Activation and deactivation statuses are represented by events rather than mutating historical version records.
 
-`PromptRepository` is the persistence abstraction. A future PostgreSQL implementation should perform expected-latest checks, version insertion and audit insertion in a transaction; use a transactionally guarded active-version pointer; enforce tenant ownership with composite tenant keys and RLS; and prevent ordinary application roles from updating/deleting historical version rows. No migration is included or applied here.
+`PromptRepository` is implemented by `InMemoryPromptRepository` and `PostgresPromptRepository`. The PostgreSQL adapter uses an injected trusted transaction-scope factory; expected-latest allocation is serialized with a transaction advisory lock and checked in the same transaction as version plus created-event inserts. Approval is append-only; activation checks approval and expected-active state under a transaction lock, then updates the pointer and records activation/deactivation events atomically. `active_pair` reads both layers in one SQL statement. Migration 0007 places immutable prompt history and metadata events under forced RLS; `bri_app` cannot update/delete prompt versions or lifecycle events. Platform rows require an active BRS SuperAdmin context for management/history, while only the active platform version may be read under an explicit tenant `prompt:platform:read` permission. No generic service-role bypass is used.
 
 ## Prompt assembly contract
 
@@ -56,4 +56,4 @@ Client text is always represented as lower-trust content. Prompt assembly cannot
 - Privacy Shield: remain mandatory for every provider-bound prompt and other input; this module does not replace or weaken it.
 - Tenant configuration: provide server-verified tenant context and the explicitly authorized prompt read/manage grants; no caller-selected tenant is trusted.
 - Admin interface: a future UI can expose draft/version comparison, approval, activation, restore and audit status by calling an authenticated server API. No UI/API routes are included.
-- Persistent storage: replace `InMemoryPromptRepository` with a PostgreSQL adapter implementing atomic compare-and-swap, append-only history, RLS and metadata-only audit. In-memory data is lost on process exit and is not production durable.
+- Persistent storage: migration 0007 and PostgreSQL prompt/Privacy Shield repositories now provide forced-RLS tenant histories, platform SuperAdmin boundaries, append-only versions/events, transaction-scoped CAS and metadata-only configuration audit. Adapters depend on a trusted host scope factory; the existing API has not been composed with them. In-memory repositories remain for isolated unit tests.
