@@ -52,3 +52,11 @@ RTO/RPO, backup cadence/retention, availability target, maintenance policy, refe
 ## 8. Deployment decision dependencies
 
 Tenancy layout depends on security and product contracts. Identity, secrets and customer-managed keys depend on deployment ownership. Queue/search selection depends on workload and operations. External AI connectivity depends on data policy and legal/provider approval. Packaging/update model depends on private customer ops. Decide these through AD-02, AD-12 and dependent ADRs; no infrastructure is provisioned by this architecture assignment.
+
+## 9. Assignment 06 hosted-development preparation
+
+Per the product brief, the existing Next.js frontend is hosted on Vercel and the FastAPI service is currently local; these are user-provided context, not deployment-state verification in this document. The target design is a same-origin Next.js server-side proxy to a hosted HTTPS FastAPI API. Browser code must not receive database credentials, privileged Supabase keys or server-only API secrets. The proxy must use a fixed server-configured API origin and forward only allowlisted routes/methods; it must not accept a browser-selected identity, tenant, role or scope.
+
+FastAPI preparation includes environment-aware configuration, binding to the hosting-provided `PORT` when hosted, separate liveness and database readiness, hosted-mode rejection of development identity headers, secure session/token verification, and request-ID/status/duration observability without credentials, tokens, paths containing sensitive query values or request bodies. Readiness must accurately report dependency availability without disclosing connection details.
+
+Railway is a provider to evaluate for the API, not an approved or provisioned destination. Vercel/Supabase settings, cloud resources, database migrations and deployments require explicit owner approval. No production target or release readiness is inferred from local tests or documentation.

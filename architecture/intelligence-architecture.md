@@ -10,7 +10,11 @@ Decision Intelligence operates over structured historical decisions and their ev
 
 Both capabilities share tenant/policy, provenance, retrieval and response contracts. Their record semantics and evaluation remain distinct.
 
-## 2. Proposed request lifecycle
+## 2. Mandatory Privacy Shield and proposed request lifecycle
+
+The Privacy Shield is a required server-side boundary for every model-bound item. Documents, historical cases, user questions, attachments, retrieved passages and background-job inputs must be screened before any AI provider receives them. The browser cannot bypass it. The AI Gateway must reject a call unless a trusted server component supplies a current, request-bound pass covering all content and the selected provider/purpose.
+
+Signature-based detection of AVG/GDPR-sensitive information is mandatory. It is only a baseline: add extensible detection and policy stages (such as named-entity recognition, contextual sensitivity classification, tenant/purpose policy, and escalation/review) and fail closed if any required check is missing, unavailable or uncertain. Redact/tokenize/minimize before provider egress; keep mappings and raw content within BRI-controlled boundaries. A signature pass is not a legal-compliance guarantee. No such Privacy Shield or AI Gateway enforcement is currently implemented in the repository; the present question-answering path is deterministic/local and no external model call is present in the inspected application code.
 
 1. Authenticate principal and resolve active tenant/membership.
 2. Authorize operation, purpose, time range and permitted data scope.
@@ -18,12 +22,13 @@ Both capabilities share tenant/policy, provenance, retrieval and response contra
 4. Retrieve only permitted knowledge, source versions, decisions and evidence.
 5. Revalidate access, lifecycle and source version.
 6. Assess evidence sufficiency, contradiction, recency and missing data.
-7. Use deterministic calculations/tools where appropriate; call a permitted model only for capabilities requiring it.
-8. Validate output schema, citations, scope and claims where feasible.
-9. Return supported facts, calculations, summaries, inferences, recommendations and unknowns distinctly, with limitations and citations.
-10. Record minimised audit/usage metadata and policy/model/configuration versions.
+7. Pass every provider-bound input through the Privacy Shield and verify its server-generated attestation in the AI Gateway; reject if any item is unchecked or disallowed.
+8. Use deterministic calculations/tools where appropriate; call a permitted model only after the gateway accepts the shielded request.
+9. Validate output schema, citations, scope and claims where feasible.
+10. Return supported facts, calculations, summaries, inferences, recommendations and unknowns distinctly, with limitations and citations.
+11. Record minimised audit/usage metadata and policy/model/configuration versions without storing sensitive prompt content by default.
 
-If evidence is insufficient or access cannot be established, fail closed, ask for clarification or abstain according to an approved policy.
+If evidence, access, shield status or policy cannot be established, fail closed, ask for clarification or abstain according to an approved policy. No provider adapter, ingestion worker, attachment processor or alternate API may call around the gateway.
 
 ## 3. Provider-independent orchestration
 

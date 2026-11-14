@@ -96,21 +96,35 @@ User-provided baseline = direction in the initiating brief. Proposed = recommend
 - Recommendation: begin compute-on-read for bounded use; evaluate controlled API/export before materialization. No direct internal DB access for external tools.
 - Dependencies: metric ownership, privacy thresholds, workload, reproducibility, API contracts.
 
-### AD-15 — Identity federation and service identities
-- Status: Local-development decision approved on 2026-11-10: use a development-only synthetic identity adapter, hard-disabled outside explicitly enabled local development. This is not a production login or identity-provider decision.
-- Options: OIDC, SAML, both; tenant-managed identity vs local accounts; machine client credentials/mTLS.
-- Production identity remains unresolved. Dependencies: customer sectors, private/offline environment, MFA, user lifecycle, delegated administration and agent scopes.
+### AD-15 — Identity provider and federation
+- Status: Approved for the Assignment 06 native-authentication baseline by the product owner on 2026-11-13: Supabase Auth is the initial native identity provider and TOTP MFA is mandatory for protected BRI access. Standards-based client federation, including Entra ID, is a future architecture requirement; connection configuration/JIT implementation is deferred. This is not approval to change provider settings or production identity configuration.
+- Decision: keep authentication identity separate from BRI principal, tenant membership, role and resource authorization. Bind identities by verified provider issuer and subject; tenant membership and grants remain explicit BRI-owned records. No unrestricted public signup, email-domain authorization, or browser-selected tenant/role/scope. SSO/JIT must default-deny until BRI grants access and must never create administrators automatically.
+- Consequences: verify authentication server-side, require verified MFA assurance before protected access, check current BRI mapping/membership/session status, and enforce through API authorization plus PostgreSQL RLS. Preserve the existing synthetic identity adapter only for loopback local development.
+- Dependencies/unresolved: exact browser session/cookie mechanism, recovery proofing and reauthentication windows, production IdP configuration, client SSO lifecycle and provider settings. All external settings changes require explicit approval.
 
-### AD-16 — Data classification and external-model policy
-- Status: Unresolved; foundational risk gate.
-- Options: per-tenant policy matrix, deployment-only allowlist, source-classified controls; hosted/local provider tiers.
-- Recommendation: classify before provider routing; default restrict and minimize; require explicit policy/contract approval for external processing.
-- Dependencies: legal/privacy review, residency, provider retention/training, encryption/key custody.
+### AD-16 — Data classification, Privacy Shield and external-model policy
+- Status: User-approved mandatory Privacy Shield boundary for the Assignment 06 correction on 2026-11-13. Detailed detector policy, classifications, provider allowlist, retention/region rules and legal compliance review remain unresolved.
+- Decision: every document, historical case, user question, attachment and retrieved context item must pass a server-side Privacy Shield before any AI model receives it. The AI Gateway rejects missing, incomplete, stale or disallowed shield results. Signature-based AVG/GDPR-sensitive-information detection is mandatory but not sufficient; the design must support additional detectors and policy enforcement, and fail closed when required checks cannot be completed.
+- Consequences: no frontend-only screening, individual bypass or alternate provider path; shield attestations are server-generated and request/content/provider/purpose-bound. Minimize/redact/tokenize before egress, protect re-identification mappings, and keep sensitive content out of logs. No legal-compliance claim follows from a signature match/pass.
+- Dependencies/unresolved: detector coverage and update ownership, false-positive/negative handling, review/escalation policy, data classification, provider/region/subprocessor contracts, retention/training controls and legal/privacy assessment. Full Privacy Shield and AI Gateway implementation is not authorized in this correction.
 
 ### AD-17 — Temporal decision model
 - Status: Proposed minimum: decision, evidence, recorded reasoning status, actor/time, action/outcome links; advanced causal analysis deferred.
 - Unresolved: decision lifecycle, alternatives, dissent, legal record requirements and outcome attribution.
 - Dependencies: customer discovery, domain governance and reporting semantics.
+
+### AD-18 — Role hierarchy, account cardinality and administrator governance
+- Status: Corrected by the product owner for Assignment 06 on 2026-11-13; management/provisioning APIs remain unimplemented.
+- Decision: User reads historical cases/documents and uses the AI question window. SuperUser inherits User and CRUDs historical cases/documents. Admin inherits SuperUser and CRUDs standard user accounts, manages AI Gateway configuration and approved websites, but cannot create/promote/manage client Admin accounts. SuperAdmin is reserved for authorized BRI/BRS employees, has full platform-wide CRUD authority, may administer multiple organisations and exclusively manages client Admin accounts.
+- Enforcement: User/SuperUser/Admin accounts have exactly one client organisation. Platform SuperAdmins may have multiple scoped organisation memberships. Role labels define capability ceilings only; `role_permissions` and resource-level assignments plus server-side tenant/resource checks remain authoritative. Migration 0006 encodes the client role classes, partial one-client membership uniqueness and distinct global SuperAdmin grant; the corrected migration passed isolated PostgreSQL validation, while managed-Supabase compatibility remains unverified.
+- Consequences: public signup and automatic SSO/JIT administrator creation remain prohibited. Privileged actions require server-side authorization, audit, secret minimization and controlled recovery; resetting a password does not bypass MFA. UI visibility is not enforcement.
+- Dependencies/unresolved: privileged API design, tenant-selection workflow for multi-organisation SuperAdmins, provider-side account creation credentials, recovery proofing/approvals, audit retention, exact admin limits and enforceable emergency-admin count.
+
+### AD-19 — Hosted development preparation and deployment boundary
+- Status: Preparation is in scope for Assignment 06; hosting provider and deployment remain unapproved.
+- Decision: preserve the existing Vercel frontend context from the product brief and prepare a server-side same-origin proxy to a hosted HTTPS FastAPI API. The API must support the hosting-provided port, separate liveness/readiness, server-only secrets, hosted-mode rejection of synthetic identity, and redacted operational logs. Railway is a candidate to evaluate, not a selected or provisioned provider.
+- Boundary: local code, tests and deployment instructions do not authorize cloud-resource creation, Vercel/Railway deployment, Supabase Auth setting changes, shared-database migration, or production configuration. Obtain explicit approval for each external action and verify target identity before any database connection or write.
+- Dependencies/unresolved: hosting compatibility, provider/region, network and proxy trust, cookie/session mechanics, secrets/rotation, cost, monitoring, rollback, incident response and production hardening.
 
 ## Decision dependencies (partial order)
 
@@ -126,6 +140,8 @@ User-provided baseline = direction in the initiating brief. Proposed = recommend
 ## Approval log
 
 - AD-02 development-MVP scope confirmation: BRI product owner, 2026-11-12. Confirmed shared PostgreSQL with tenant identifiers, tenant-scoped composite foreign keys, RLS + FORCE RLS, mandatory application authorization, default-deny explicit scopes, no implicit inheritance, synthetic development identities, dedicated least-privilege application/migration roles, and exclusion of Supabase-managed schemas and the previous BRI Supabase project. Production approval is expressly not granted.
+- Assignment 06 authentication and governance baseline, corrected 2026-11-13: Supabase Auth is the initial native provider; TOTP is mandatory; BRI identities, memberships and explicit permissions remain server-authoritative. The corrected four-role hierarchy and one-client-per-ordinary-account rule supersede the earlier three-class/no-platform-tenant-access simplification; see AD-18. The mandatory Privacy Shield/AI Gateway boundary and AVG/GDPR signature-detection requirement are recorded in AD-16. No external provider configuration, shared migration, cloud provisioning or deployment is authorized.
+- Assignment 06 hosted-development preparation boundary: BRI product owner, 2026-11-13. FastAPI hosted readiness and server-side Vercel proxy preparation are in scope; Railway remains only a candidate. No external infrastructure, deployment, shared migration or Supabase Auth settings change is authorized; see AD-19.
 - Governance precedence: BRI product owner, 2026-11-12. Approved ADRs govern their documented decisions; dependent documents must be consistent; explicit security prohibitions/legal boundaries remain binding; unresolved decisions stay unresolved absent explicit approval.
 
 ## Assessment of prior reports (reference-only synthesis)

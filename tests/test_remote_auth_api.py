@@ -280,8 +280,8 @@ class RemoteAuthenticationApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(database.write_contexts, [])
 
-    def test_tenant_memberships_are_not_admin_permissions(self) -> None:
-        client, _, _ = make_app(principal=Principal("platform-superadmin", frozenset(), ()))
+    def test_principal_without_memberships_lists_no_client_tenants(self) -> None:
+        client, _, _ = make_app(principal=Principal("unassigned-principal", frozenset(), ()))
         response = client.get(
             "/v1/me/tenants",
             headers={"Authorization": "Bearer valid-supabase-token"},
@@ -306,9 +306,9 @@ class RemoteAuthenticationApiTests(unittest.TestCase):
         self.assertNotIn(private_query, log_text)
         self.assertNotIn(token, log_text)
 
-    def test_platform_superadmin_has_no_implicit_tenant_data_access(self) -> None:
-        platform_admin = Principal("platform-superadmin", frozenset(), ())
-        client, _, database = make_app(principal=platform_admin)
+    def test_unassigned_principal_has_no_implicit_tenant_data_access(self) -> None:
+        unassigned = Principal("unassigned-principal", frozenset(), ())
+        client, _, database = make_app(principal=unassigned)
         response = client.get(
             "/v1/organizations/structure",
             headers={"Authorization": "Bearer valid-supabase-token"},

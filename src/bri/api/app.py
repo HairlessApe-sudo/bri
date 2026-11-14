@@ -66,7 +66,9 @@ class ApiSettings:
 
     @classmethod
     def from_environment(cls) -> ApiSettings:
-        load_dotenv(_PROJECT_ROOT / ".env.local", override=False)
+        environment = os.environ.get("BRI_ENVIRONMENT", "").strip().lower()
+        if environment == "development":
+            load_dotenv(_PROJECT_ROOT / ".env.local", override=False)
         return cls(
             environment=os.environ.get("BRI_ENVIRONMENT", ""),
             dev_auth_enabled=os.environ.get("BRI_DEV_AUTH_ENABLED", "").strip().lower() == "true",

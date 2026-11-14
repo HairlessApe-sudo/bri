@@ -51,7 +51,13 @@ def make_token(**overrides: object) -> str:
     return f"{header}.{payload}.{_b64url(signature)}"
 
 
-def auth_server_response(request: httpx.Request, *, status: int = 200, user_id: str = USER_ID) -> httpx.Response:
+def auth_server_response(
+    request: httpx.Request,
+    *,
+    status: int = 200,
+    user_id: str = USER_ID,
+    factors: list[dict[str, str]] | None = None,
+) -> httpx.Response:
     try:
         header, payload, signature = request.headers["authorization"].removeprefix("Bearer ").split(".")
         signing_input = f"{header}.{payload}".encode("ascii")
@@ -61,18 +67,32 @@ def auth_server_response(request: httpx.Request, *, status: int = 200, user_id: 
             return httpx.Response(401, json={"message": "invalid"})
     except (KeyError, ValueError):
         return httpx.Response(401, json={"message": "invalid"})
-    return httpx.Response(status, json={"id": user_id})
+    return httpx.Response(
+        status,
+        json={
+            "id": user_id,
+            "factors": factors if factors is not None else [{"factor_type": "totp", "status": "verified"}],
+        },
+    )
 
 
 class SupabaseTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
-    def verifier(self, token: str, *, status: int = 200, user_id: str = USER_ID, failure: Exception | None = None):
+    def verifier(
+        self,
+        token: str,
+        *,
+        status: int = 200,
+        user_id: str = USER_ID,
+        factors: list[dict[str, str]] | None = None,
+        failure: Exception | None = None,
+    ):
         seen: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             seen.append(request)
             if failure:
                 raise failure
-            return auth_server_response(request, status=status, user_id=user_id)
+            return auth_server_response(request, status=status, user_id=user_id, factors=factors)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         verifier = SupabaseTokenVerifier(ISSUER.removesuffix("/auth/v1"), PUBLISHABLE_KEY, client=client)
@@ -143,6 +163,39 @@ class SupabaseTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     with self.assertRaises(AuthenticationRejected):
                         await verifier.verify(token)
+                finally:
+                    await client.aclose()
+
+    async def test_requires_a_current_verified_totp_factor_in_supabase_user_state(self) -> None:
+        invalid_factor_sets = [
+            [],
+            [{"factor_type": "phone", "status": "verified"}],
+            [{"factor_type": "totp", "status": "unverified"}],
+        ]
+        for factors in invalid_factor_sets:
+            with self.subTest(factors=factors):
+                verifier, client, _, token = self.verifier(make_token(), factors=factors)
+                try:
+                    with self.assertRaises(AuthenticationRejected):
+                        await verifier.verify(token)
+                finally:
+                    await client.aclose()
+
+    async def test_rejects_malformed_base64url_header_or_payload_segments(self) -> None:
+        token = make_token()
+        original = token.split(".")
+        for index in (0, 1):
+            with self.subTest(segment=index):
+                parts = original.copy()
+                parts[index] += "!"
+                signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+                signature = hmac.new(TEST_SIGNING_KEY.encode(), signing_input, hashlib.sha256).digest()
+                parts[2] = _b64url(signature)
+                malformed = ".".join(parts)
+                verifier, client, _, malformed = self.verifier(malformed)
+                try:
+                    with self.assertRaises(AuthenticationRejected):
+                        await verifier.verify(malformed)
                 finally:
                     await client.aclose()
 

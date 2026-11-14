@@ -58,15 +58,29 @@ class SupabaseTokenVerifier:
         self.client = client
 
     @staticmethod
+    def _decode_segment(segment: str) -> bytes:
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        if not segment or any(character not in alphabet for character in segment) or len(segment) % 4 == 1:
+            raise ValueError("invalid base64url segment")
+        encoded = segment.encode("ascii")
+        decoded = base64.b64decode(
+            encoded + b"=" * (-len(encoded) % 4),
+            altchars=b"-_",
+            validate=True,
+        )
+        if base64.urlsafe_b64encode(decoded).rstrip(b"=") != encoded:
+            raise ValueError("non-canonical base64url segment")
+        return decoded
+
+    @staticmethod
     def _decode_claims(access_token: str) -> tuple[dict[str, Any], dict[str, Any]]:
         if not isinstance(access_token, str) or len(access_token) > 16_384:
             raise AuthenticationRejected("Invalid access token")
         try:
             header_part, payload_part, signature_part = access_token.split(".")
-            if not header_part or not payload_part or not signature_part:
-                raise ValueError("empty JWT segment")
-            header_bytes = base64.urlsafe_b64decode(header_part + "=" * (-len(header_part) % 4))
-            payload_bytes = base64.urlsafe_b64decode(payload_part + "=" * (-len(payload_part) % 4))
+            header_bytes = SupabaseTokenVerifier._decode_segment(header_part)
+            payload_bytes = SupabaseTokenVerifier._decode_segment(payload_part)
+            SupabaseTokenVerifier._decode_segment(signature_part)
             header = json.loads(header_bytes)
             claims = json.loads(payload_bytes)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -139,12 +153,19 @@ class SupabaseTokenVerifier:
         if not self._valid_time_claim(claims.get("iat"), now=now, allow_future=True):
             raise AuthenticationRejected("Invalid access token issue time")
 
+        factors = user.get("factors")
+        has_verified_totp_factor = isinstance(factors, list) and any(
+            isinstance(factor, dict)
+            and factor.get("factor_type") == "totp"
+            and factor.get("status") == "verified"
+            for factor in factors
+        )
         amr = claims.get("amr")
         has_totp = isinstance(amr, list) and any(
             isinstance(method, dict) and method.get("method") == "totp"
             for method in amr
         )
-        if claims.get("aal") != "aal2" or not has_totp:
+        if claims.get("aal") != "aal2" or not has_totp or not has_verified_totp_factor:
             raise AuthenticationRejected("Verified TOTP MFA is required")
 
         return AuthenticatedIdentity(auth_user_id=auth_user_id, session_id=session_id, issuer=issuer)

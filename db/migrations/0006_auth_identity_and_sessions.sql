@@ -1,5 +1,5 @@
 -- Provider-independent BRI identity mapping and fail-closed session governance.
--- Apply only after explicit owner approval; this file has not been applied.
+-- Apply through scripts/db/migrate.py after explicit target approval; the corrected revision was validated only against disposable local PostgreSQL, not shared Supabase.
 
 CREATE TABLE bri.auth_principals (
     principal_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -37,8 +37,8 @@ CREATE TABLE bri.auth_identity_links (
 CREATE TABLE bri.auth_tenant_memberships (
     tenant_id text NOT NULL,
     principal_id uuid NOT NULL,
-    membership_type text NOT NULL DEFAULT 'standard'
-        CHECK (membership_type IN ('standard', 'client_admin')),
+    membership_type text NOT NULL DEFAULT 'user'
+        CHECK (membership_type IN ('user', 'superuser', 'admin', 'platform_superadmin')),
     status text NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'active', 'suspended', 'deactivated')),
     emergency_admin boolean NOT NULL DEFAULT false,
@@ -47,8 +47,11 @@ CREATE TABLE bri.auth_tenant_memberships (
     PRIMARY KEY (tenant_id, principal_id),
     FOREIGN KEY (tenant_id) REFERENCES bri.tenants (tenant_id),
     FOREIGN KEY (principal_id) REFERENCES bri.auth_principals (principal_id),
-    CHECK (NOT emergency_admin OR membership_type = 'client_admin')
+    CHECK (NOT emergency_admin OR membership_type = 'admin')
 );
+CREATE UNIQUE INDEX auth_one_client_org_per_principal
+    ON bri.auth_tenant_memberships (principal_id)
+    WHERE membership_type IN ('user', 'superuser', 'admin');
 
 CREATE TABLE bri.auth_role_assignments (
     tenant_id text NOT NULL,
@@ -79,6 +82,27 @@ CREATE TABLE bri.platform_superadmins (
     FOREIGN KEY (principal_id) REFERENCES bri.auth_principals (principal_id),
     FOREIGN KEY (created_by_principal_id) REFERENCES bri.auth_principals (principal_id)
 );
+
+CREATE OR REPLACE FUNCTION bri.require_platform_superadmin_membership()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NEW.membership_type = 'platform_superadmin'
+       AND NOT EXISTS (
+           SELECT 1 FROM bri.platform_superadmins s
+           WHERE s.principal_id = NEW.principal_id AND s.status = 'active'
+       ) THEN
+        RAISE EXCEPTION 'platform superadmin membership requires an active platform grant';
+    END IF;
+    RETURN NEW;
+END;
+$function$;
+CREATE TRIGGER platform_superadmin_membership_requires_grant
+    BEFORE INSERT OR UPDATE OF membership_type, principal_id
+    ON bri.auth_tenant_memberships
+    FOR EACH ROW EXECUTE FUNCTION bri.require_platform_superadmin_membership();
+REVOKE ALL ON FUNCTION bri.require_platform_superadmin_membership() FROM PUBLIC;
 
 CREATE TABLE bri.tenant_admin_policies (
     tenant_id text PRIMARY KEY,
@@ -213,6 +237,14 @@ CREATE POLICY auth_membership_self_read ON bri.auth_tenant_memberships
             WHERE auth_user_id = nullif(current_setting('bri.auth_user_id', true), '')::uuid
               AND status = 'active'
         )
+        AND (
+            membership_type <> 'platform_superadmin'
+            OR EXISTS (
+                SELECT 1 FROM bri.platform_superadmins s
+                WHERE s.principal_id = bri.auth_tenant_memberships.principal_id
+                  AND s.status = 'active'
+            )
+        )
     );
 
 CREATE POLICY auth_role_assignment_self_read ON bri.auth_role_assignments
@@ -291,11 +323,17 @@ CREATE POLICY security_audit_self_insert ON bri.security_audit_events
             OR (event_type LIKE 'tenant.%'
                 AND tenant_id = nullif(current_setting('bri.tenant_id', true), '')
                 AND EXISTS (
-                    SELECT 1 FROM bri.auth_tenant_memberships m
-                    WHERE m.tenant_id = bri.security_audit_events.tenant_id
-                      AND m.principal_id = actor_principal_id
-                      AND m.membership_type = 'client_admin'
+                    SELECT 1
+                    FROM bri.auth_role_assignments a
+                    JOIN bri.role_permissions rp
+                      ON rp.tenant_id = a.tenant_id AND rp.role_id = a.role_id
+                    JOIN bri.auth_tenant_memberships m
+                      ON m.tenant_id = a.tenant_id AND m.principal_id = a.principal_id
+                    WHERE a.tenant_id = bri.security_audit_events.tenant_id
+                      AND a.principal_id = bri.security_audit_events.actor_principal_id
+                      AND a.status = 'active'
                       AND m.status = 'active'
+                      AND rp.permission = 'security:audit:write'
                 ))
             OR (event_type LIKE 'auth.%'
                 AND (tenant_id IS NULL OR tenant_id = nullif(current_setting('bri.tenant_id', true), '')))
@@ -314,16 +352,31 @@ CREATE POLICY security_audit_admin_read ON bri.security_audit_events
                     AND status = 'active'
               )
         ))
-        OR (tenant_id = nullif(current_setting('bri.tenant_id', true), '') AND EXISTS (
-            SELECT 1 FROM bri.auth_tenant_memberships m
-            WHERE m.tenant_id = bri.security_audit_events.tenant_id
-              AND m.membership_type = 'client_admin'
-              AND m.status = 'active'
-              AND m.principal_id IN (
+        OR (tenant_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM bri.platform_superadmins s
+            WHERE s.status = 'active'
+              AND s.principal_id IN (
                   SELECT principal_id FROM bri.auth_identity_links
                   WHERE auth_user_id = nullif(current_setting('bri.auth_user_id', true), '')::uuid
                     AND status = 'active'
               )
+        ))
+        OR (tenant_id = nullif(current_setting('bri.tenant_id', true), '') AND EXISTS (
+            SELECT 1
+            FROM bri.auth_role_assignments a
+            JOIN bri.role_permissions rp
+              ON rp.tenant_id = a.tenant_id AND rp.role_id = a.role_id
+            JOIN bri.auth_tenant_memberships m
+              ON m.tenant_id = a.tenant_id AND m.principal_id = a.principal_id
+            WHERE a.tenant_id = bri.security_audit_events.tenant_id
+              AND a.principal_id IN (
+                  SELECT principal_id FROM bri.auth_identity_links
+                  WHERE auth_user_id = nullif(current_setting('bri.auth_user_id', true), '')::uuid
+                    AND status = 'active'
+              )
+              AND a.status = 'active'
+              AND m.status = 'active'
+              AND rp.permission = 'security:audit:read'
         ))
     );
 
