@@ -22,6 +22,8 @@ class Principal:
     subject_id: str
     tenant_ids: frozenset[str]
     grants: tuple[AccessGrant, ...]
+    role_bindings: tuple[tuple[str, str], ...] = ()
+    platform_superadmin: bool = False
 
 
 @dataclass(frozen=True, slots=True)

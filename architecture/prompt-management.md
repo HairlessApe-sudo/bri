@@ -1,6 +1,6 @@
 # Versioned Prompt Management — Assignment 07C
 
-Status: standalone backend domain component with a PostgreSQL repository adapter and migration 0007 validated on disposable PostgreSQL. It is not connected to an API, AI Gateway, or model provider.
+Status: standalone backend domain component with a PostgreSQL repository adapter, migration 0007, and local tenant-scoped API composition delivered by Assignment 09. It is not connected to an AI Gateway or model provider.
 
 ## Purpose and boundaries
 
@@ -54,6 +54,6 @@ Client text is always represented as lower-trust content. Prompt assembly cannot
 
 - AI Gateway: call the authorized assembler, preserve the separate trust channels, enforce current version provenance, and independently apply Privacy Shield before provider egress. No Gateway/provider integration is present.
 - Privacy Shield: remain mandatory for every provider-bound prompt and other input; this module does not replace or weaken it.
-- Tenant configuration: provide server-verified tenant context and the explicitly authorized prompt read/manage grants; no caller-selected tenant is trusted.
-- Admin interface: a future UI can expose draft/version comparison, approval, activation, restore and audit status by calling an authenticated server API. No UI/API routes are included.
-- Persistent storage: migration 0007 and PostgreSQL prompt/Privacy Shield repositories now provide forced-RLS tenant histories, platform SuperAdmin boundaries, append-only versions/events, transaction-scoped CAS and metadata-only configuration audit. Adapters depend on a trusted host scope factory; the existing API has not been composed with them. In-memory repositories remain for isolated unit tests.
+- Tenant configuration: Assignment 09 now supplies a trusted server-side request context and tenant-bound repository scopes. Authenticated reads and local loopback synthetic Admin writes call the existing service contracts; hosted-development Supabase writes remain disabled until production authentication is separately approved. The API does not accept caller-selected tenant context.
+- Admin interface: a future UI can expose draft/version comparison, approval, activation, restore and audit status by calling the authenticated server API. No UI routes are included.
+- Persistent storage: migration 0007 and PostgreSQL prompt/Privacy Shield repositories provide forced-RLS tenant histories, platform SuperAdmin boundaries, append-only versions/events, transaction-scoped CAS and metadata-only configuration audit. Assignment 09 composes the tenant endpoints without changing migration 0007. In-memory repositories remain for isolated unit tests.

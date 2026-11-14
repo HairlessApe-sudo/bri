@@ -31,6 +31,12 @@ from bri.api.authentication import (
     AuthenticatedIdentity,
     SupabaseTokenVerifier,
 )
+from bri.api.configuration import (
+    ConfigurationServicesFactory,
+    TrustedRequestContext,
+    build_trusted_request_context,
+    create_configuration_router,
+)
 from bri.api.database import Database, DatabaseUnavailable, TenantSession
 from bri.knowledge.query import EvidenceCitation, KnowledgeItem, answer_question
 
@@ -104,6 +110,15 @@ class DatabaseProtocol(Protocol):
     def tenant_context(self, tenant_id: str) -> ContextManager[TenantSession]: ...
 
     def write_tenant_context(self, tenant_id: str) -> ContextManager[TenantSession]: ...
+
+    def configuration_context(
+        self,
+        tenant_id: str,
+        *,
+        auth_user_id: str | None,
+        synthetic_principal_id: str | None,
+        read_only: bool,
+    ) -> ContextManager[TenantSession]: ...
 
 
 class OrganizationNodeResponse(BaseModel):
@@ -429,6 +444,7 @@ def create_app(
     database: DatabaseProtocol | None = None,
     catalog: SyntheticCatalog | None = None,
     token_verifier: Any | None = None,
+    configuration_services_factory: ConfigurationServicesFactory | None = None,
 ) -> FastAPI:
     active_settings = settings or ApiSettings.from_environment()
     active_database = database or Database(
@@ -466,6 +482,7 @@ def create_app(
             {"name": "health", "description": "Restricted-role database readiness."},
             {"name": "organizations", "description": "Read only exact-scope organizational structures."},
             {"name": "knowledge", "description": "Approved synthetic knowledge and source references."},
+            {"name": "configuration", "description": "Tenant-scoped prompt and Privacy Shield configuration."},
         ],
     )
     app.state.settings = active_settings
@@ -991,5 +1008,46 @@ def create_app(
                     source_location=item.source_location,
                 )
         raise HTTPException(status_code=404, detail="Source reference not found")
+
+    def trusted_configuration_context(
+        request: Request,
+        principal: Principal = Depends(current_principal),
+    ) -> TrustedRequestContext:
+        if len(principal.tenant_ids) != 1:
+            raise HTTPException(
+                status_code=403,
+                detail="A server-resolved single-tenant configuration context is required",
+            )
+        identity = getattr(request.state, "authenticated_identity", None)
+        if active_settings.auth_mode == "synthetic":
+            identity_source: Literal["supabase", "synthetic"] = "synthetic"
+            auth_user_id = None
+            session_id = None
+            assurance_level = "development-synthetic"
+            assurance_methods: tuple[str, ...] = ()
+        else:
+            identity_source = "supabase"
+            auth_user_id = getattr(identity, "auth_user_id", None)
+            session_id = getattr(identity, "session_id", None)
+            assurance_level = getattr(identity, "assurance_level", "")
+            assurance_methods = tuple(getattr(identity, "assurance_methods", ()))
+        try:
+            return build_trusted_request_context(
+                principal,
+                request_id=getattr(request.state, "request_id", ""),
+                identity_source=identity_source,
+                auth_user_id=auth_user_id,
+                session_id=session_id,
+                assurance_level=assurance_level,
+                assurance_methods=assurance_methods,
+            )
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Trusted configuration context is unavailable") from None
+
+    app.include_router(create_configuration_router(
+        context_dependency=trusted_configuration_context,
+        database=active_database,
+        services_factory=configuration_services_factory,
+    ))
 
     return app

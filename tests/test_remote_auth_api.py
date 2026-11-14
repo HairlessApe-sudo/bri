@@ -28,7 +28,7 @@ class FakeVerifier:
         self.tokens.append(token)
         if token != "valid-supabase-token":
             raise AuthenticationRejected("invalid")
-        return AuthenticatedIdentity(AUTH_USER_ID, SESSION_ID, ISSUER)
+        return AuthenticatedIdentity(AUTH_USER_ID, SESSION_ID, ISSUER, "aal2", ("totp",))
 
 
 class FakeRemoteDatabase:

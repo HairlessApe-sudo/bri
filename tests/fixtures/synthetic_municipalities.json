@@ -19,7 +19,7 @@
         {"relationship_id": "rel-noordlicht-collab", "from_node_id": "org-noordlicht-information", "to_node_id": "org-noordlicht-policy-team", "relationship_type": "supports", "grants_access": false}
       ],
       "roles": [
-        {"role_id": "role-noordlicht-admin", "display_name": "Synthetic Organisation Administrator", "permissions": ["organisation:manage"]},
+        {"role_id": "role-noordlicht-admin", "display_name": "Synthetic Organisation Administrator", "permissions": ["organisation:manage", "prompt:client:read", "prompt:client:manage", "prompt:platform:read", "privacy:configuration:read", "privacy:configuration:manage", "privacy:signature:read", "privacy:signature:manage"]},
         {"role_id": "role-noordlicht-org-reader", "display_name": "Synthetic Organisation Structure Reader", "permissions": ["organisation:read"]},
         {"role_id": "role-noordlicht-steward", "display_name": "Synthetic Knowledge Steward", "permissions": ["knowledge:read", "knowledge:review"]},
         {"role_id": "role-noordlicht-reader", "display_name": "Synthetic Policy Reader", "permissions": ["knowledge:read"]},
@@ -27,7 +27,7 @@
         {"role_id": "role-noordlicht-reviewer", "display_name": "Synthetic Knowledge Reviewer", "permissions": ["knowledge:read", "knowledge:review"]}
       ],
       "users": [
-        {"user_id": "user-noordlicht-admin", "display_name": "Synthetic Administrator", "role_assignments": [{"role_id": "role-noordlicht-admin", "scope_node_id": "org-noordlicht-root"}]},
+        {"user_id": "user-noordlicht-admin", "display_name": "Synthetic Administrator", "membership_type": "admin", "role_assignments": [{"role_id": "role-noordlicht-admin", "scope_node_id": "org-noordlicht-root"}]},
         {"user_id": "user-noordlicht-org-reader", "display_name": "Synthetic Organisation Structure Reader", "role_assignments": [{"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-root"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-policy"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-policy-team"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-information"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-public"}, {"role_id": "role-noordlicht-org-reader", "scope_node_id": "org-noordlicht-public-team"}]},
         {"user_id": "user-noordlicht-steward", "display_name": "Synthetic Knowledge Steward", "role_assignments": [{"role_id": "role-noordlicht-steward", "scope_node_id": "org-noordlicht-information"}]},
         {"user_id": "user-noordlicht-reader", "display_name": "Synthetic Policy Reader", "role_assignments": [{"role_id": "role-noordlicht-reader", "scope_node_id": "org-noordlicht-policy-team"}]},

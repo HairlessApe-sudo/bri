@@ -28,6 +28,8 @@ class AuthenticatedIdentity:
     auth_user_id: str
     session_id: str
     issuer: str
+    assurance_level: str
+    assurance_methods: tuple[str, ...]
 
 
 class SupabaseTokenVerifier:
@@ -168,4 +170,15 @@ class SupabaseTokenVerifier:
         if claims.get("aal") != "aal2" or not has_totp or not has_verified_totp_factor:
             raise AuthenticationRejected("Verified TOTP MFA is required")
 
-        return AuthenticatedIdentity(auth_user_id=auth_user_id, session_id=session_id, issuer=issuer)
+        methods = tuple(sorted({
+            method["method"]
+            for method in amr
+            if isinstance(method, dict) and isinstance(method.get("method"), str)
+        })) if isinstance(amr, list) else ()
+        return AuthenticatedIdentity(
+            auth_user_id=auth_user_id,
+            session_id=session_id,
+            issuer=issuer,
+            assurance_level=str(claims["aal"]),
+            assurance_methods=methods,
+        )

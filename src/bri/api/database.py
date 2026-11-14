@@ -11,6 +11,7 @@ from uuid import UUID
 import psycopg
 
 from bri.access.policy import AccessGrant, Principal
+from bri.access.roles import CONFIGURATION_PERMISSIONS, role_allows_permission
 
 EXPECTED_PROJECT_REF = "bwqdyibvuecgthtatrtv"
 EXPECTED_POOLER_HOST = "aws-1-eu-west-1.pooler.supabase.com"
@@ -146,14 +147,27 @@ class Database:
                     return None
 
                 principal_id = identity[0]
+                platform_row = connection.execute(
+                    "SELECT 1 FROM bri.platform_superadmins "
+                    "WHERE principal_id=%s AND status='active'",
+                    (principal_id,),
+                ).fetchone()
+                platform_superadmin = platform_row is not None
                 membership_rows = connection.execute(
-                    "SELECT tenant_id FROM bri.auth_tenant_memberships "
+                    "SELECT tenant_id, membership_type FROM bri.auth_tenant_memberships "
                     "WHERE principal_id=%s AND status='active' ORDER BY tenant_id",
                     (principal_id,),
                 ).fetchall()
-                tenant_ids = frozenset(row[0] for row in membership_rows)
+                membership_types = {row[0]: row[1] for row in membership_rows}
+                if not platform_superadmin and any(
+                    membership_type == "platform_superadmin"
+                    for membership_type in membership_types.values()
+                ):
+                    return None
+                tenant_ids = frozenset(membership_types)
                 grants: list[AccessGrant] = []
                 for tenant_id in sorted(tenant_ids):
+                    membership_type = membership_types[tenant_id]
                     connection.execute(
                         "SELECT set_config('bri.tenant_id', %s, true)",
                         (tenant_id,),
@@ -172,14 +186,25 @@ class Database:
                         "ORDER BY a.scope_node_id, rp.permission",
                         (tenant_id, principal_id),
                     ).fetchall()
-                    grants.extend(
-                        AccessGrant(tenant_id=tenant_id, action=row[1], scope_id=row[0])
-                        for row in role_rows
-                    )
+                    for scope_id, permission in role_rows:
+                        if not role_allows_permission(membership_type, permission):
+                            continue
+                        grant_scope = tenant_id if (
+                            permission in CONFIGURATION_PERMISSIONS
+                            and membership_type in {"admin", "platform_superadmin"}
+                        ) else scope_id
+                        grants.append(AccessGrant(tenant_id, permission, grant_scope))
+                if platform_superadmin:
+                    grants.extend((
+                        AccessGrant("brs-platform", "prompt:platform:manage", "platform-prompt"),
+                        AccessGrant("brs-platform", "signature_package:manage", "platform-signature-packages"),
+                    ))
                 return Principal(
                     subject_id=principal_id,
                     tenant_ids=tenant_ids,
-                    grants=tuple(grants),
+                    grants=tuple(dict.fromkeys(grants)),
+                    role_bindings=tuple(sorted(membership_types.items())),
+                    platform_superadmin=platform_superadmin,
                 )
         except DatabaseUnavailable:
             raise
@@ -295,8 +320,28 @@ class Database:
             raise DatabaseUnavailable("authenticated user context was not established")
 
     @contextmanager
-    def _tenant_transaction(self, tenant_id: str, *, read_only: bool) -> Iterator[TenantSession]:
+    def _tenant_transaction(
+        self,
+        tenant_id: str,
+        *,
+        read_only: bool,
+        auth_user_id: str | None = None,
+        synthetic_principal_id: str | None = None,
+    ) -> Iterator[TenantSession]:
+        if not isinstance(tenant_id, str) or not tenant_id or len(tenant_id) > 128:
+            raise DatabaseUnavailable("tenant database context failed")
+        if auth_user_id is not None and synthetic_principal_id is not None:
+            raise DatabaseUnavailable("ambiguous identity context")
         try:
+            if auth_user_id is not None:
+                auth_user_id = str(UUID(auth_user_id))
+            if synthetic_principal_id is not None and (
+                not isinstance(synthetic_principal_id, str)
+                or not synthetic_principal_id
+                or len(synthetic_principal_id) > 255
+                or any(ord(char) < 32 for char in synthetic_principal_id)
+            ):
+                raise DatabaseUnavailable("synthetic identity context is invalid")
             with self._connect() as connection:
                 if read_only:
                     connection.execute("SET TRANSACTION READ ONLY")
@@ -312,11 +357,23 @@ class Database:
                 ).fetchone()
                 if not context or context[0] != tenant_id:
                     raise DatabaseUnavailable("tenant context was not established")
+                if auth_user_id is not None:
+                    self._set_auth_user_context(connection, auth_user_id)
+                if synthetic_principal_id is not None:
+                    connection.execute(
+                        "SELECT set_config('bri.synthetic_principal_id', %s, true)",
+                        (synthetic_principal_id,),
+                    )
+                    synthetic_context = connection.execute(
+                        "SELECT current_setting('bri.synthetic_principal_id', true)"
+                    ).fetchone()
+                    if not synthetic_context or synthetic_context[0] != synthetic_principal_id:
+                        raise DatabaseUnavailable("synthetic identity context was not established")
                 connection.execute("SELECT count(*) FROM bri.tenants").fetchone()
                 yield TenantSession(tenant_id=tenant_id, connection=connection)
         except DatabaseUnavailable:
             raise
-        except psycopg.Error as exc:
+        except (psycopg.Error, ValueError, TypeError) as exc:
             raise DatabaseUnavailable("tenant database context failed") from exc
 
     @contextmanager
@@ -329,4 +386,22 @@ class Database:
     def write_tenant_context(self, tenant_id: str) -> Iterator[TenantSession]:
         """Open a read/write RLS transaction for one server-resolved tenant."""
         with self._tenant_transaction(tenant_id, read_only=False) as session:
+            yield session
+
+    @contextmanager
+    def configuration_context(
+        self,
+        tenant_id: str,
+        *,
+        auth_user_id: str | None,
+        synthetic_principal_id: str | None,
+        read_only: bool,
+    ) -> Iterator[TenantSession]:
+        """Open a trusted configuration transaction with tenant and identity GUCs."""
+        with self._tenant_transaction(
+            tenant_id,
+            read_only=read_only,
+            auth_user_id=auth_user_id,
+            synthetic_principal_id=synthetic_principal_id,
+        ) as session:
             yield session

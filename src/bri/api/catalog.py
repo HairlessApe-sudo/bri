@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping
 
 from bri.access.policy import AccessGrant, Principal
+from bri.access.roles import CONFIGURATION_PERMISSIONS, role_allows_permission
 
 
 _FIXTURE_PATH = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "synthetic_municipalities.json"
@@ -88,20 +89,30 @@ def load_catalog(fixture_path: Path = _FIXTURE_PATH) -> SyntheticCatalog:
             subject_id = user["user_id"]
             if subject_id in principals:
                 raise ValueError("synthetic identities must be globally unique")
+            membership_type = user.get("membership_type", "user")
+            if membership_type not in {"user", "superuser", "admin", "platform_superadmin"}:
+                raise ValueError("synthetic identity has an unknown approved role")
+            role_bindings = ((tenant_id, membership_type),)
             grants: list[AccessGrant] = []
             for assignment in user.get("role_assignments", []):
                 role = roles.get(assignment["role_id"])
                 scope_id = assignment["scope_node_id"]
                 if role is None or scope_id not in node_ids:
                     raise ValueError("synthetic role assignment refers to an unknown role or scope")
-                grants.extend(
-                    AccessGrant(tenant_id, permission, scope_id)
-                    for permission in role.get("permissions", [])
-                )
+                for permission in role.get("permissions", []):
+                    if not role_allows_permission(membership_type, permission):
+                        continue
+                    grant_scope = tenant_id if (
+                        permission in CONFIGURATION_PERMISSIONS
+                        and membership_type in {"admin", "platform_superadmin"}
+                    ) else scope_id
+                    grants.append(AccessGrant(tenant_id, permission, grant_scope))
             principals[subject_id] = Principal(
                 subject_id=subject_id,
                 tenant_ids=frozenset({tenant_id}),
-                grants=tuple(grants),
+                grants=tuple(dict.fromkeys(grants)),
+                role_bindings=role_bindings,
+                platform_superadmin=membership_type == "platform_superadmin",
             )
 
     return SyntheticCatalog(organizations, principals)

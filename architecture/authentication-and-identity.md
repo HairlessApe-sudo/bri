@@ -1,6 +1,6 @@
 # Authentication, Identity and Governance Architecture
 
-Status: User-approved Assignment 06 baseline and staged implementation plan, recorded 2026-11-13. This is not approval to change Supabase settings, apply a migration to a shared database, deploy services, or use production credentials/data. See `architecture-decisions.md` for decision status and precedence.
+Status: User-approved Assignment 06 baseline and staged implementation plan, recorded 2026-11-13. Assignment 09 adds local trusted composition for tenant configuration APIs, recorded 2026-11-14; it does not approve changes to Supabase settings, shared migrations, deployment, or production credentials/data. See `architecture-decisions.md` for decision status and precedence.
 
 ## 1. Authority and status
 
@@ -88,7 +88,7 @@ Exit gate: UI, server proxy and local tests are present. Live Auth settings, rea
 
 ### Stage 4 — Administrator governance and provisioning (pending; bounded follow-up)
 
-Scope: SuperAdmin-only platform governance and client Admin creation/promotion/suspension; tenant Admins may manage standard user accounts, AI Gateway configuration and approved websites within their one client organisation; User/SuperUser/Admin permission ceilings are expressed through explicit role permissions and resource scopes; enforceable account-to-organisation cardinality; secure credential setup/recovery and MFA recovery; append-only, secret-free audit records; SuperAdmins may administer multiple organisations.
+Scope: SuperAdmin-only platform governance and client Admin creation/promotion/suspension; tenant Admins may manage standard user accounts, AI Gateway configuration and approved websites within their one client organisation; User/SuperUser/Admin permission ceilings are expressed through explicit role permissions and resource scopes; enforceable account-to-organisation cardinality; secure credential setup/recovery and MFA recovery; append-only, secret-free audit records; SuperAdmins may administer multiple organisations. Assignment 09 implements only tenant prompt and tenant Privacy Shield configuration API workflows; it does not implement these broader governance or provisioning workflows.
 
 Exit gate: server-side authorization and database grants/policies reject privilege escalation, enforce exactly one client organisation for ordinary accounts, permit authorized SuperAdmin administration across multiple organisations, and audit privileged actions. UI visibility alone is not an enforcement control.
 
@@ -111,6 +111,16 @@ Requires owner approval for target project/host, migration application, external
 - No weakening of RLS, authorization, or existing negative tests to make a flow pass.
 - No remote migrations, external Supabase Auth changes, cloud-resource creation, deployment, production-data access or Git push without explicit authorization.
 
-## 7. Verification and current status
+## 8. Assignment 09 — trusted configuration API composition (local, 2026-11-14)
+
+`src/bri/api/configuration.py` composes the existing prompt and Privacy Shield services with PostgreSQL repositories through a `TrustedRequestContext`. The context contains the server-resolved `Principal`, one authorized tenant, effective role and surviving explicit grants, verified authentication source, auth user/session identifiers when present, AAL/method assurance, and middleware-generated request ID. Role/tenant/principal headers are never used as authority. Role ceilings filter configuration/platform grants before domain services receive the principal; domain services still enforce exact permission and tenant scope. Platform SuperAdmin authority comes from the active server-queried platform grant record; a stale platform membership does not preserve platform or tenant-admin privileges.
+
+Repository scopes are created from that trusted context. They reject a repository tenant that differs from the authorized tenant and call `Database.configuration_context`, which connects only through the existing `bri_app` target, sets `bri.tenant_id` and verified auth or development-synthetic identity transaction-locally, checks the established context, and makes read scopes read-only. Existing forced RLS and restricted grants are unchanged; no service-role or BYPASSRLS path was added.
+
+The mounted endpoints are `GET /v1/configuration/prompts/active`, `GET /v1/configuration/prompts/versions`, `POST /v1/configuration/prompts/versions`, `POST /v1/configuration/prompts/versions/{version}/restore`, `GET /v1/configuration/privacy-signatures/active`, `POST /v1/configuration/privacy-signatures`, and `PUT /v1/configuration/privacy-signatures/{signature_id}`. Handlers delegate to `PromptManager`, `TenantSignatureManager` and `PrivacyShieldConfigurationManager`/the existing signature configuration provider. Writes are enabled only for the explicitly local, loopback synthetic identity mode; the hosted-development Supabase API remains read-only while no production auth project is approved. Tenant routes do not accept a caller-selected tenant.
+
+Verification covers request/service behavior with synthetic principals and an isolated PostgreSQL 16 database migrated only through the checked-in runner. No migration was added for Assignment 09; migration 0007 remains unchanged. The hosted Supabase project, production identity configuration, deployment, and production database composition remain unverified and unchanged. Platform prompt/package management endpoints are not part of this API slice; only server-derived SuperAdmin grants can carry platform management authority in the principal model.
+
+## 9. Verification and current status
 
 The current code and verification evidence are summarized in `../planning/progress.md`. A passing disposable PostgreSQL validation establishes local PostgreSQL behavior only; it does not prove compatibility with every managed Supabase setting or authorize application to the shared development project.

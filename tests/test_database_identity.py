@@ -33,6 +33,11 @@ class IdentityConnection:
         self.queries: list[tuple[str, tuple[object, ...]]] = []
         self.tenant_contexts: list[str] = []
         self.current_tenant: str | None = None
+        self.membership_rows: tuple[tuple[str, str], ...] = (
+            ("tenant-alpha", "user"),
+            ("tenant-beta", "user"),
+        )
+        self.active_platform_superadmin: bool = False
 
     def __enter__(self):
         return self
@@ -57,13 +62,15 @@ class IdentityConnection:
                 return FakeCursor((PRINCIPAL_ID, "active"))
             return FakeCursor(None)
         if "FROM bri.auth_tenant_memberships" in normalized:
-            return FakeCursor(rows=(("tenant-alpha", "active"), ("tenant-beta", "active")))
+            return FakeCursor(rows=self.membership_rows)
         if "FROM bri.auth_role_assignments" in normalized:
             tenant_id = params[0]
             if "tenant-alpha" == tenant_id:
                 return FakeCursor(rows=(("org-alpha-root", "organisation:read"),))
             if "tenant-beta" == tenant_id:
                 return FakeCursor(rows=(("knowledge-beta", "knowledge:read"),))
+        if "FROM bri.platform_superadmins" in normalized:
+            return FakeCursor((1,) if self.active_platform_superadmin else None)
         if "current_setting('bri.tenant_id'" in normalized:
             return FakeCursor((self.current_tenant,))
         if "set_config('bri.tenant_id'" in normalized:
@@ -81,6 +88,7 @@ class AuthenticatedPrincipalDatabaseTests(unittest.TestCase):
             principal = database.resolve_authenticated_principal(AUTH_USER_ID, ISSUER, AUTH_USER_ID)
 
         self.assertIsNotNone(principal)
+        assert principal is not None
         self.assertEqual(principal.subject_id, PRINCIPAL_ID)
         self.assertEqual(principal.tenant_ids, frozenset({"tenant-alpha", "tenant-beta"}))
         self.assertEqual(
@@ -93,6 +101,31 @@ class AuthenticatedPrincipalDatabaseTests(unittest.TestCase):
         self.assertEqual(connection.tenant_contexts, ["tenant-alpha", "tenant-beta"])
         self.assertTrue(any("SET TRANSACTION READ ONLY" == sql for sql, _ in connection.queries))
         self.assertTrue(any("set_config('bri.auth_user_id'" in sql for sql, _ in connection.queries))
+        self.assertFalse(principal.platform_superadmin)
+        self.assertTrue(any("FROM bri.platform_superadmins" in sql for sql, _ in connection.queries))
+
+    def test_active_platform_superadmin_record_grants_platform_authority(self) -> None:
+        connection = IdentityConnection()
+        connection.membership_rows = (("tenant-alpha", "platform_superadmin"),)
+        connection.active_platform_superadmin = True
+        database = Database(SUPABASE_URL, DATABASE_URL)
+        with patch("bri.api.database.psycopg.connect", return_value=connection):
+            principal = database.resolve_authenticated_principal(AUTH_USER_ID, ISSUER, AUTH_USER_ID)
+        self.assertIsNotNone(principal)
+        assert principal is not None
+        self.assertTrue(principal.platform_superadmin)
+        self.assertIn(
+            ("brs-platform", "prompt:platform:manage", "platform-prompt"),
+            {(grant.tenant_id, grant.action, grant.scope_id) for grant in principal.grants},
+        )
+
+    def test_inactive_platform_superadmin_record_rejects_stale_membership(self) -> None:
+        connection = IdentityConnection()
+        connection.membership_rows = (("tenant-alpha", "platform_superadmin"),)
+        database = Database(SUPABASE_URL, DATABASE_URL)
+        with patch("bri.api.database.psycopg.connect", return_value=connection):
+            principal = database.resolve_authenticated_principal(AUTH_USER_ID, ISSUER, AUTH_USER_ID)
+        self.assertIsNone(principal)
 
     def test_unknown_provider_subject_returns_no_bri_principal(self) -> None:
         connection = IdentityConnection()

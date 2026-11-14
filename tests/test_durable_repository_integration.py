@@ -16,6 +16,8 @@ from uuid import uuid4
 import psycopg
 
 from bri.access.policy import AccessGrant, Principal
+from bri.api.configuration import build_trusted_request_context, tenant_connection_scope
+from bri.api.database import Database
 from bri.privacy.postgres import PostgresShieldConfigurationStore, PostgresSignatureConfigurationProvider, PostgresSignaturePackageStore, PostgresTenantSignatureStore
 from bri.privacy.regional import (
     ManagedTenantSignature, PrivacyShieldConfigurationManager, RegionalSignatureRegistry,
@@ -67,6 +69,7 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
                 conn.execute(f"DELETE FROM bri.{table} WHERE tenant_id = ANY(%s)", ([self.tenant_a, self.tenant_b],))
             conn.execute("DELETE FROM bri.auth_role_assignments WHERE tenant_id=%s AND principal_id=%s", (self.tenant_a,self.tenant_principal_id))
             conn.execute("DELETE FROM bri.auth_tenant_memberships WHERE tenant_id=%s AND principal_id=%s", (self.tenant_a,self.tenant_principal_id))
+            conn.execute("DELETE FROM bri.auth_tenant_memberships WHERE principal_id=%s", (self.platform_principal_id,))
             conn.execute("DELETE FROM bri.role_permissions WHERE tenant_id=%s AND role_id=%s", (self.tenant_a,self.role_id))
             conn.execute("DELETE FROM bri.app_roles WHERE tenant_id=%s AND role_id=%s", (self.tenant_a,self.role_id))
             conn.execute("DELETE FROM bri.org_nodes WHERE tenant_id=%s AND node_id=%s", (self.tenant_a,self.scope_id))
@@ -220,6 +223,81 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
             audit_columns = {row[0] for row in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='bri' AND table_name='configuration_audit_events'").fetchall()}
             self.assertNotIn("content", audit_columns)
             self.assertNotIn("pattern", audit_columns)
+    def test_authenticated_principal_requires_active_platform_superadmin_record(self):
+        with psycopg.connect(ADMIN_DSN) as conn:
+            conn.execute(
+                "INSERT INTO bri.auth_tenant_memberships(tenant_id,principal_id,membership_type,status) "
+                "VALUES (%s,%s,'platform_superadmin','active')",
+                (self.tenant_a, self.platform_principal_id),
+            )
+
+        class DisposableDatabase(Database):
+            def _connect(self):
+                return psycopg.connect(APP_DSN)
+
+        database = DisposableDatabase(
+            "https://bwqdyibvuecgthtatrtv.supabase.co",
+            "postgresql://bri_app@db.bwqdyibvuecgthtatrtv.supabase.co:5432/postgres",
+        )
+        active = database.resolve_authenticated_principal(
+            self.platform_auth_user_id,
+            "https://synthetic.invalid/auth/v1",
+            self.platform_auth_user_id,
+        )
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertTrue(active.platform_superadmin)
+        self.assertEqual(active.tenant_ids, frozenset({self.tenant_a}))
+
+        with psycopg.connect(ADMIN_DSN) as conn:
+            conn.execute(
+                "UPDATE bri.platform_superadmins SET status='suspended' WHERE principal_id=%s",
+                (self.platform_principal_id,),
+            )
+        suspended = database.resolve_authenticated_principal(
+            self.platform_auth_user_id,
+            "https://synthetic.invalid/auth/v1",
+            self.platform_auth_user_id,
+        )
+        self.assertIsNotNone(suspended)
+        assert suspended is not None
+        self.assertFalse(suspended.platform_superadmin)
+        self.assertEqual(suspended.tenant_ids, frozenset())
+        self.assertFalse(any(grant.tenant_id == "brs-platform" for grant in suspended.grants))
+
+    def test_trusted_configuration_scope_binds_identity_tenant_and_read_only_mode(self):
+        principal = Principal(
+            "synthetic-admin",
+            frozenset({self.tenant_a}),
+            (AccessGrant(self.tenant_a, "prompt:client:read", self.tenant_a),),
+            role_bindings=((self.tenant_a, "admin"),),
+        )
+        context = build_trusted_request_context(
+            principal,
+            request_id="synthetic-request-09",
+            identity_source="synthetic",
+            assurance_level="development-synthetic",
+        )
+        class DisposableDatabase(Database):
+            def _connect(self):
+                return psycopg.connect(APP_DSN)
+
+        database = DisposableDatabase(
+            "https://bwqdyibvuecgthtatrtv.supabase.co",
+            "postgresql://bri_app@db.bwqdyibvuecgthtatrtv.supabase.co:5432/postgres",
+        )
+        scope = tenant_connection_scope(database, context, read_only=True)
+
+        with scope(self.tenant_a) as conn:
+            self.assertEqual(conn.execute("SELECT current_user").fetchone()[0], "bri_app")
+            self.assertEqual(conn.execute("SELECT current_setting('bri.tenant_id',true)").fetchone()[0], self.tenant_a)
+            self.assertEqual(conn.execute("SELECT current_setting('bri.synthetic_principal_id',true)").fetchone()[0], "synthetic-admin")
+            self.assertEqual(conn.execute("SELECT current_setting('transaction_read_only')").fetchone()[0], "on")
+            self.assertEqual(conn.execute("SELECT tenant_id FROM bri.tenants ORDER BY tenant_id").fetchall(), [(self.tenant_a,)])
+
+        with self.assertRaisesRegex(PermissionError, "configuration_tenant_scope_mismatch"):
+            with scope(self.tenant_b):
+                self.fail("a repository could not enter another tenant's scope")
 
 
 if __name__ == "__main__":
