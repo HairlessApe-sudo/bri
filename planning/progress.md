@@ -1,7 +1,14 @@
 # BRI Project Progress
 
-Last updated: 2026-11-14
+Last updated: 2026-11-18
 Stage: 3 — platform foundation MVP, synthetic development implementation
+
+## Assignment 10 verification / Assignment 11 intake (2026-11-18)
+
+- **A10 acceptance: blocked.** At `07958f6`, Assignment 09 is the last numbered implementation record. No original A10 or A11 specification or acceptance criteria were found in this checkout or its reachable Git history. The authentication/MFA baseline belongs to Assignment 06 (AD-15); the production-hardening stage in `../architecture/authentication-and-identity.md` is not an approved A10 specification. No A10 criterion can be marked passed or failed.
+- **Local regression evidence, not production verification:** Python unittest discovery ran 244 tests: 224 passed, 20 opt-in database tests skipped (shared-development and disposable database connections disabled). The suite exercises token and TOTP checks, BRI session rejection/revocation, tenant and role authorization, and privacy controls. In `web`, `npm test` passed all 19 tests, `npm run typecheck` passed, and `npm run build` succeeded. No live identity-provider flow, database migration, live RLS test, production secret configuration or deployment was verified in this review.
+- **Open authentication work:** The API deliberately rejects production Supabase mode. Controlled privileged recovery, session audit writes and governance decisions below remain open. Do not remove that production guard or infer A10 obligations from these gaps.
+- **A11: not started.** Record or identify the approved A10 and A11 briefs before implementing either assignment. No application, database, API or provider settings were changed.
 
 ## Current status
 
