@@ -31,7 +31,13 @@ Keep forced RLS, tenant isolation, the two-eligible-admin invariant and default-
 
 Approved on 2026-11-19 as a new subdivision of A11. An active verified same-tenant client Admin needs explicit `account:history:read` and independent authorization to view an ordinary target, including a deactivated one. Reuse existing immutable provisioning, activation, display-name, suspension/reactivation, grant/revocation and deactivation events, without backfilling or fabricating records. Return only the event ID, timestamp, stable action, outcome, approved reason code where recorded and independently authorized actor ID/name; otherwise show a neutral restricted-actor label. No raw audit, provider identity, credential, MFA or recovery details, or free-form notes.
 
-Provide a paginated GET and read-only panel. Preserve target not-found indistinguishability and forced RLS; verify under the restricted database role with two synthetic tenants, stable cursors, actor masking, audit immutability and no raw-audit access. No new account mutations, deployment, A11.7 or Data Disposition work.
+Provide a paginated GET and read-only panel. Preserve target not-found indistinguishability and forced RLS; verify under the restricted database role with two synthetic tenants, stable cursors, actor masking, audit immutability and no raw-audit access. No new account mutations, deployment, A11.7 or Data Disposition work under A11.6.
+
+## A11.7 — Current grants visibility
+
+Owner-approved subdivision: a read-only view on ordinary User and SuperUser details for an active, verified, same-tenant client Admin with directory access and the separately granted `account:grants:read` permission. Allow only `organisation:read` and `knowledge:read` at organisational nodes the viewer can independently read by exact scope. Omit hidden scopes with no disclosure of their existence. Do not surface raw roles/assignments, internal grant metadata or authority outside the allowlist.
+
+Separate recorded assignments from effective scope grants. Suspended/deactivated accounts have no effective grants; revoked/retired assignments do not appear as active. Preserve independent knowledge record/version decisions, indistinguishable target not-found behavior and forced RLS. Use two synthetic tenants and the restricted runtime role for integration tests; include directory/history regressions and independent review. No seeded authority, grant mutations, delegation changes, deployment, A11.8 or Data Disposition work.
 
 ## Boundaries for both assignments
 

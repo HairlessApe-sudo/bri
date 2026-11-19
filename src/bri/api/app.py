@@ -40,6 +40,7 @@ from bri.api.configuration import (
     build_trusted_request_context,
     create_configuration_router,
 )
+from bri.api.account_current_grants import create_account_current_grants_router
 from bri.api.account_history import create_account_history_router
 from bri.api.approval_routes import create_approval_router
 from bri.api.boundary_audit import audit_denial, mark
@@ -569,7 +570,10 @@ def create_app(
         request.state.request_id = request_id
         path = request.url.path
         path_parts = path.rstrip("/").split("/")
-        account_history = len(path_parts) == 5 and path_parts[1:3] == ["v1", "users"] and path_parts[4] == "history"
+        private_account_read = (
+            len(path_parts) == 5 and path_parts[1:3] == ["v1", "users"]
+            and path_parts[4] in {"history", "grants"}
+        )
         log_method = request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER"
         started = time.perf_counter()
         try:
@@ -583,7 +587,7 @@ def create_app(
                 type(exc).__name__,
                 elapsed_ms,
             )
-            if not account_history and (
+            if not private_account_read and (
                 active_settings.auth_mode != "supabase" or not getattr(request.state, "audit_action", None)
             ):
                 raise
@@ -592,7 +596,7 @@ def create_app(
             response = await audit_denial(request, response, active_database)
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers["X-Request-ID"] = request_id
-        if account_history:
+        if private_account_read:
             response.headers["Cache-Control"] = "no-store"
         if path == "/v1/knowledge" or path.startswith(("/v1/knowledge/", "/v1/sources/")):
             response.headers["Cache-Control"] = "private, no-store"
@@ -1220,6 +1224,10 @@ def create_app(
         protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),
     ))
     app.include_router(create_account_history_router(
+        principal_dependency=current_principal,
+        protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),
+    ))
+    app.include_router(create_account_current_grants_router(
         principal_dependency=current_principal,
         protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),
     ))

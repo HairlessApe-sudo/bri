@@ -1,5 +1,8 @@
 import { DIRECTORY_MAX_OFFSET, DIRECTORY_MAX_QUERY, isDirectoryUserId, isHistoryCursor } from './user-directory.mjs';
 
+// Include encoded aliases in the development log and auth-refresh exclusions.
+export const backendProxyPrefix = /^\/(?:a|%61)(?:p|%70)(?:i|%69)(?:\/|%2f)(?:b|%62)(?:r|%72)(?:i|%69)(?:[/?]|%2f|$)/i;
+
 export class BackendRequestError extends Error {
   constructor(message, status) {
     super(message);
@@ -67,8 +70,9 @@ function validateBackendTarget(path, searchParams, mode, method) {
   const directory = normalized === DIRECTORY_LIST || normalized.startsWith(`${DIRECTORY_LIST}/`);
   const userPath = normalized.slice(DIRECTORY_LIST.length + 1);
   const history = directory && userPath.endsWith('/history') && isDirectoryUserId(userPath.slice(0, -'/history'.length));
+  const grants = directory && userPath.endsWith('/grants') && isDirectoryUserId(userPath.slice(0, -'/grants'.length));
   const isDirectoryRead = directory && mode === 'supabase' && path === normalized
-    && (normalized === DIRECTORY_LIST || isDirectoryUserId(userPath) || history);
+    && (normalized === DIRECTORY_LIST || isDirectoryUserId(userPath) || history || grants);
   const isRead = method === 'GET' && (isDirectoryRead || READ_ROUTES.some((route) => route.test(normalized)));
   const isSessionAction = normalized === '/v1/auth/session' && ['POST', 'DELETE'].includes(method);
   const isRecovery = normalized === '/v1/auth/recovery/invalidate' && method === 'POST';
@@ -109,7 +113,7 @@ function validateBackendTarget(path, searchParams, mode, method) {
   }
   if (isSessionAction && params.size) throw new BackendRequestError('Session routes do not accept query parameters', 400);
 
-  return { normalized, params, directory, history };
+  return { normalized, params, directory, history, grants };
 }
 
 function makeBackendRequest({ normalized, params }, env, mode, accessToken) {
@@ -162,10 +166,12 @@ export function assertSameOriginMutation(requestUrl, originHeader) {
 export async function prepareProxyRequest(request, path, env, readSessionToken) {
   const method = request.method.toUpperCase();
   const mode = resolveUiAuthMode(env);
-  const { pathname, searchParams } = new URL(request.url);
+  const { pathname, searchParams, href } = new URL(request.url);
   const target = validateBackendTarget(path, searchParams, mode, method);
-  // Catch-all params are decoded. Do not let a path alias reach the history API.
-  if (target.history && pathname !== `/api/bri${path}`) throw new BackendRequestError('Not found', 404);
+  // Catch-all params are decoded. Do not let path aliases reach account subresources.
+  if ((target.history || target.grants) && pathname !== `/api/bri${path}`) throw new BackendRequestError('Not found', 404);
+  // URLSearchParams does not expose empty query strings or separators alone.
+  if (target.grants && href.split('#', 1)[0].includes('?')) throw new BackendRequestError('Unsupported query parameter', 400);
   let accessToken;
   if (mode === 'supabase') {
     assertNoSpoofedIdentityHeaders(request.headers);
@@ -179,7 +185,7 @@ export async function prepareProxyRequest(request, path, env, readSessionToken) 
     accessToken = await readSessionToken(target.directory);
     if (!accessToken) throw new BackendRequestError('Authentication required', 401);
   }
-  return {...makeBackendRequest(target, env, mode, accessToken), accessToken, directory: target.directory};
+  return {...makeBackendRequest(target, env, mode, accessToken), accessToken, directory: target.directory, grants: target.grants};
 }
 
 export async function readProxySessionToken(auth, directory) {

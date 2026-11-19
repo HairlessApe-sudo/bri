@@ -1,0 +1,9 @@
+# A11.7 — Current account grants
+
+`GET /v1/users/{id}/grants` is a read-only, no-store projection for one ordinary User or SuperUser. It accepts no query parameters. An active same-tenant client Admin with a verified BRI session must have existing directory access and an explicit `account:grants:read` grant. No permission is seeded. Foreign, excluded and nonexistent targets have the same not-found response.
+
+The database applies a closed disclosure filter before returning rows. Only `organisation:read` and `knowledge:read` can appear, and then only at a node the viewing Admin can independently read by exact scope. Hidden scopes are omitted without IDs, labels, counts or a flag. Account class/status and the visible scope ID, display name and approved permission code are the only data exposed; raw role labels and assignment/authorisation metadata are not returned. Assignments with the same permission at the same scope are represented once. No grant mutations, delegation changes or raw runtime assignment reads are introduced.
+
+Recorded assignments show current, non-retired permission assignments. Effective grants are the approved subset under the directory-visible account state and the existing role permission ceiling. This is not an admission or session check: private target identity-link and credential-security state do not change this projection, and their enforcement at actual authentication and access boundaries is unchanged. Pending, suspended and deactivated accounts have no effective grants here. A suspended account can retain recorded assignments; a retired assignment is not presented as current.
+
+An effective entry is a grant at an exact node, not a promise of access to any particular record. In particular, the independent current [knowledge record and version decisions](knowledge-architecture.md#implemented-a114-p1-current-read-authorization) remain authoritative. This surface does not change them, or enable hosted writes.

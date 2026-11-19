@@ -3,6 +3,11 @@
 Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A11.7 — Current grants visibility (2026-11-19)
+
+- Added a read-only [current grants view](../architecture/account-current-grants.md) on ordinary account details. It requires separate grants-read authority, existing directory access and the viewer's independent exact-node access. Only the two approved permission codes are shown, with recorded and effective grants separated. No grant seeding or mutation was added.
+- Local verification: 502 backend and 90 frontend tests passed without failures or skips. TypeScript and the optimized build passed. Disposable PostgreSQL verified all 25 migration checksums, no-op replay and forced RLS on 52 non-ledger tables. Regression tests confirm that private target admission state does not affect the projection and that blank scope labels do not block the panel.
+
 ## A11.6 — Read-only account administration history (2026-11-19)
 
 - Added `GET /v1/users/{id}/history` and a cursor-paged panel on ordinary account detail. A verified, authorized client Admin needs both the existing directory permission and an explicit `account:history:read` grant. The database independently checks target and actor visibility, and returns a projection of existing allowlisted audit events only. Migration `0024_account_history.sql` removes legacy raw audit reads from the runtime role without changing audit writes or immutable records. See [the history boundary](../architecture/account-history.md).

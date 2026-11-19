@@ -1,7 +1,10 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { backendProxyPrefix } from '@/lib/backend-proxy.mjs';
 
 export async function proxy(request: NextRequest) {
+  // The API handler validates the method and target before resolving its own session.
+  if (backendProxyPrefix.test(request.nextUrl.pathname)) return NextResponse.next();
   if (
     process.env.BRI_UI_AUTH_MODE !== 'supabase'
     || !process.env.NEXT_PUBLIC_SUPABASE_URL

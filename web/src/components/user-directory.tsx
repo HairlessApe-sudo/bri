@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react';
 import { PageHeading, useRemote } from '@/components/data-state';
 import { DirectoryDetail, DirectoryList } from '@/components/user-directory-view';
+import { UserGrants } from '@/components/user-grants';
 import { UserHistory } from '@/components/user-history';
 import type { DirectoryUser, DirectoryUserPage } from '@/lib/api';
 import { DIRECTORY_MAX_QUERY, directoryDetailPath, directoryListPath, isDirectoryUserId } from '@/lib/user-directory.mjs';
@@ -18,8 +19,10 @@ export function DirectoryDetailContent({ accountId, data, error, loading, onBack
   if (data && (!isDirectoryUserId(data.id) || data.id.toLowerCase() !== accountId.toLowerCase())) {
     return <DirectoryDetail error={new Error('Unexpected account response')} onBack={onBack} />;
   }
+  const showPanels = data && !error && !loading;
   return <DirectoryDetail data={data} error={error} loading={loading} onBack={onBack}
-    history={data && !error && !loading ? <UserHistory key={accountId} accountId={accountId} /> : null} />;
+    grants={showPanels ? <UserGrants accountId={accountId} /> : null}
+    history={showPanels ? <UserHistory key={accountId} accountId={accountId} /> : null} />;
 }
 
 function DetailRequest({ accountId, onBack }: { accountId: string; onBack: () => void }) {

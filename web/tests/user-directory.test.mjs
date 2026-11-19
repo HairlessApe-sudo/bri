@@ -10,6 +10,9 @@ import ts from 'typescript';
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier === 'next/server') return next('next/server.js', context);
+    if (specifier === '@supabase/ssr') {
+      return { url: 'data:text/javascript,export const createServerClient = () => globalThis.directoryTestMiddlewareAuth()', shortCircuit: true };
+    }
     if (specifier === '@/lib/supabase/server') {
       return { url: 'data:text/javascript,export const createSupabaseServerClient = () => globalThis.directoryTestSession()', shortCircuit: true };
     }
@@ -212,6 +215,137 @@ const historyItem = {
   actor: { id: null, display_name: 'Restricted actor' },
 };
 const otherId = '00000000-0000-4000-8000-000000000099';
+const organisationGrant = { scope_id: 'node-a', scope_name: 'Research & Policy', permission: 'organisation:read' };
+const knowledgeGrant = { ...organisationGrant, permission: 'knowledge:read' };
+const grants = { account_class: 'superuser', account_status: 'active', assigned: [organisationGrant, knowledgeGrant], effective: [knowledgeGrant] };
+const blankGrant = { ...organisationGrant, scope_id: 'node-b', scope_name: '' };
+const whitespaceGrant = { ...knowledgeGrant, scope_id: 'node-c', scope_name: ' \t\n\u00a0' };
+const mixedGrants = { ...grants, assigned: [...grants.assigned, blankGrant, whitespaceGrant],
+  effective: [...grants.effective, blankGrant, whitespaceGrant] };
+
+test('account grants mount only for a matching successful directory detail', async () => {
+  const { DirectoryDetailContent } = await import('../src/components/user-directory.tsx');
+  const props = { accountId: id, onBack() {}, data: user };
+  assert.match(render(DirectoryDetailContent, props), /Account grants[^]*Loading/);
+  for (const state of [{ loading: true }, { error: new Error() }, { data: null }, { data: { ...user, id: otherId } }]) {
+    assert.doesNotMatch(render(DirectoryDetailContent, { ...props, ...state }), /Account grants/);
+  }
+});
+
+test('grants render assigned and effective lists independently and explain scoped access', async () => {
+  const { GrantsView } = await import('../src/components/user-grants.tsx');
+  const { parseGrants } = await import('../src/lib/user-grants.ts');
+  const show = (data) => render(GrantsView, { state: { phase: 'ready', grants: parseGrants(data) } });
+  const html = show(grants);
+  assert.match(html, /Superuser[^]*Active/);
+  assert.match(html, /Assigned grants[^]*Research &amp; Policy[^]*node-a[^]*Organisation read[^]*Knowledge read/);
+  const effectiveTable = html.match(/<table aria-label="Effective grants">(.*?)<\/table>/)?.[1];
+  assert.match(effectiveTable, /Knowledge read/);
+  assert.doesNotMatch(effectiveTable, /Organisation read/);
+  assert.match(html, /Effective grants[^<]*listed scopes[^<]*account status shown/i);
+  assert.match(html, /does not determine[^<]*sign in[^<]*record or version/i);
+  assert.doesNotMatch(html, /<form|<input|<button|organisation:read|knowledge:read/);
+  const empty = show({ ...grants, account_class: 'user', assigned: [], effective: [] });
+  assert.match(empty, /No assigned grants[^]*No effective grants/);
+  for (const status of ['pending', 'suspended', 'deactivated']) {
+    const inactive = show({ ...grants, account_status: status, effective: [] });
+    assert.match(inactive, new RegExp(`No effective grants[^]*${status}`, 'i'));
+    assert.match(inactive, /Organisation read/);
+  }
+  for (const [phase, label] of [['loading', /Loading/], ['unauthenticated', /Verified session required/],
+    ['denied', /Access denied/], ['missing', /Grants not found/], ['error', /Could not load account grants/]]) {
+    const output = render(GrantsView, { state: { phase, grants, error: 'private upstream detail' } });
+    assert.match(output, label);
+    assert.doesNotMatch(output, /Research|private upstream detail|No assigned grants|No effective grants/);
+  }
+});
+
+test('grants render a neutral label beside each visible unnamed scope ID', async () => {
+  const { GrantsView } = await import('../src/components/user-grants.tsx');
+  const html = render(GrantsView, { state: { phase: 'ready', grants: mixedGrants } });
+  for (const title of ['Assigned grants', 'Effective grants']) {
+    const table = html.match(new RegExp(`<table aria-label="${title}">([\\s\\S]*?)</table>`))?.[1];
+    assert.match(table, /Research &amp; Policy<\/td><td[^>]*>node-a<\/td>/);
+    assert.match(table, /Unnamed scope<\/td><td[^>]*>node-b<\/td>/);
+    assert.match(table, /Unnamed scope<\/td><td[^>]*>node-c<\/td>/);
+  }
+});
+
+test('grants display a whitespace-only scope ID visibly', async () => {
+  const { GrantsView } = await import('../src/components/user-grants.tsx');
+  const grant = { ...blankGrant, scope_id: ' \t' };
+  const html = render(GrantsView, { state: { phase: 'ready', grants: { ...grants, assigned: [grant], effective: [] } } });
+  assert.match(html, /Unnamed scope<\/td><td[^>]*>\\u0020\\u0009<\/td>/);
+});
+
+test('grant snapshots preserve nonempty scope IDs without trimming', async () => {
+  const { parseGrants } = await import('../src/lib/user-grants.ts');
+  const grant = { ...knowledgeGrant, scope_id: ' \t' };
+  const snapshot = { ...grants, assigned: [grant], effective: [grant] };
+  assert.deepEqual(parseGrants(snapshot), snapshot);
+});
+
+test('grant snapshots reject NUL in either scope field', async () => {
+  const { parseGrants } = await import('../src/lib/user-grants.ts');
+  for (const patch of [{ scope_id: 'node\0id' }, { scope_name: 'scope\0name' }]) {
+    const grant = { ...knowledgeGrant, ...patch };
+    assert.throws(() => parseGrants({ ...grants, assigned: [grant], effective: [grant] }), /Invalid grants response/);
+  }
+});
+
+test('grants reject malformed or inconsistent snapshots without exposing raw metadata', async () => {
+  const { parseGrants } = await import('../src/lib/user-grants.ts');
+  assert.deepEqual(parseGrants(grants), grants);
+  for (const data of [null, {}, { ...grants, account_class: 'opaque_role' }, { ...grants, account_status: 'inactive' },
+    { ...grants, hidden_count: 5 }, { ...grants, assigned: {} }, { ...grants, effective: null },
+    { ...grants, assigned: [null] }, { ...grants, assigned: [organisationGrant, organisationGrant] },
+    { ...grants, effective: [knowledgeGrant, knowledgeGrant] }, { ...grants, assigned: [organisationGrant] },
+    { ...mixedGrants, effective: [{ ...blankGrant, scope_name: ' ' }] },
+    { ...mixedGrants, effective: [{ ...blankGrant, scope_id: 'unassigned-scope' }] },
+    ...['pending', 'suspended', 'deactivated'].map((account_status) => ({ ...grants, account_status })),
+    ...[{ scope_id: '' }, { scope_id: 'other' }, { scope_name: 1 }, { scope_name: ' ' }, { scope_name: 'conflict' },
+      { permission: 'constructor' }, { permission: 'knowledge:write' }, { role: 'opaque_role' }]
+      .map((patch) => ({ ...grants, effective: [{ ...knowledgeGrant, ...patch }] }))]) {
+    assert.throws(() => parseGrants(data), /Invalid grants response/);
+  }
+});
+
+test('grants use queryless GET and suppress late replies from an old account', async (t) => {
+  const { requestGrants } = await import('../src/lib/user-grants.ts');
+  const old = Promise.withResolvers();
+  const current = Promise.withResolvers();
+  const fetch = t.mock.method(globalThis, 'fetch', (path) => path.includes(id) ? old.promise : Promise.resolve(Response.json(grants)));
+  const stop = requestGrants(id, () => assert.fail('Late grants update from old account'));
+  requestGrants(otherId, current.resolve);
+  stop();
+  old.resolve(Response.json({ ...grants, assigned: [], effective: [] }));
+  assert.deepEqual(await current.promise, { phase: 'ready', grants });
+  await new Promise(setImmediate);
+  const calls = fetch.mock.calls.map(({ arguments: args }) => args);
+  assert.deepEqual(calls.map(([path]) => path), [`${listPath}/${id}/grants`, `${listPath}/${otherId}/grants`]);
+  assert.equal(calls[0][1].signal.aborted, true);
+  for (const [, init] of calls) {
+    assert.equal(init.method ?? 'GET', 'GET');
+    assert.equal(init.cache, 'no-store');
+    assert.equal(init.body, undefined);
+  }
+});
+
+test('grants map HTTP failures and invalid responses to safe states', async (t) => {
+  const { requestGrants } = await import('../src/lib/user-grants.ts');
+  let reply;
+  const fetch = t.mock.method(globalThis, 'fetch', () => Promise.resolve(reply));
+  for (const [status, phase] of [[401, 'unauthenticated'], [403, 'denied'], [404, 'missing'], [503, 'error'], [200, 'error']]) {
+    reply = Response.json({ detail: 'sensitive upstream text' }, { status });
+    const state = Promise.withResolvers();
+    requestGrants(id, state.resolve);
+    assert.deepEqual(await state.promise, { phase });
+  }
+  const invalid = Promise.withResolvers();
+  requestGrants(`${id}/other`, invalid.resolve);
+  assert.deepEqual(await invalid.promise, { phase: 'error' });
+  assert.equal(fetch.mock.callCount(), 5);
+});
 
 test('ordinary account detail mounts history only for a matching successful account response', async () => {
   const { DirectoryDetailContent } = await import('../src/components/user-directory.tsx');
@@ -600,13 +734,37 @@ test('the staged detail offers exact nodes and only the two approved read permis
   }
 });
 
-test('Next dev request logging omits directory search, detail and nested history URLs', async () => {
+test('Next dev request logging omits directory and grants URLs, including encoded proxy prefixes', async () => {
   const config = (await import('../next.config.ts')).default;
   const rules = config.logging?.incomingRequests?.ignore ?? [];
   for (const url of [`${listPath}?q=private`, `${listPath}/${id}`, `/users?q=private`, `/api/bri/v1/%75sers/${id}`,
-    `${listPath}/${id}/history?limit=25&cursor=${id}`, `${listPath}/${id}/%68istory?cursor=${id}`]) {
+    `${listPath}/${id}/history?limit=25&cursor=${id}`, `${listPath}/${id}/%68istory?cursor=${id}`,
+    `${listPath}/${id}/grants?scope_id=private`, `${listPath}/${id}/%67rants/extra`, `/api/%62ri/v1/users/${id}/grants`,
+    `/%61pi/bri/v1/users/${id}/grants`, `/api%2fbri%2fv1/users/${id}/grants`]) {
     assert.ok(rules.some((rule) => rule.test(url)), `Missing logging exclusion for a directory URL`);
   }
+});
+
+test('Next passes grants paths through without normalizing trailing slashes or pre-authenticating', async (t) => {
+  const config = (await import('../next.config.ts')).default;
+  const { proxy } = await import('../src/proxy.ts');
+  const { NextRequest } = await import('next/server');
+  const settings = { BRI_UI_AUTH_MODE: 'supabase', NEXT_PUBLIC_SUPABASE_URL: 'https://auth.example.test', NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'fixture' };
+  const previous = Object.keys(settings).map((key) => [key, process.env[key]]);
+  Object.assign(process.env, settings);
+  globalThis.directoryTestMiddlewareAuth = () => assert.fail('Proxy routes must validate the request before creating an auth client');
+  t.after(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    delete globalThis.directoryTestMiddlewareAuth;
+  });
+  for (const path of [`${listPath}/${id}/grants`, `${listPath}/${id}/grants/`, `${listPath}/${id}/%67rants`,
+    `/api/%62ri/v1/users/${id}/grants`]) {
+    const result = await proxy(new NextRequest(`https://ui.example.test${path}`));
+    assert.equal(result.headers.get('x-middleware-next'), '1');
+  }
+  assert.equal(config.skipTrailingSlashRedirect, true);
 });
 
 test('the release Next handler denies staged reads, history writes and synthetic history without session or upstream', async (t) => {
@@ -846,7 +1004,7 @@ test('staged deactivation renders a distinct warning, bounded reasons and explic
   assert.doesNotMatch(renderPanel({ ...ready, phase: 'refresh-required' }), /<form|<select|Review deactivation/);
 });
 
-test('directory client and Next handler read list, detail and history through the same-origin boundary', async (t) => {
+test('directory client and Next handler read list, detail, history and grants through the same-origin boundary', async (t) => {
   const previousMode = process.env.BRI_UI_AUTH_MODE;
   const previousOrigin = process.env.BRI_API_ORIGIN;
   process.env.BRI_UI_AUTH_MODE = 'supabase';
@@ -863,12 +1021,15 @@ test('directory client and Next handler read list, detail and history through th
   });
   const seen = [];
   let failureStatus;
+  let grantsReply = mixedGrants;
+  let grantsStatus;
   t.mock.method(globalThis, 'fetch', async (input, init) => {
     if (input.startsWith('/')) {
       assert.equal(init.headers.authorization, undefined);
       const url = new URL(input, 'https://ui.example.test');
       const result = await route.GET(new Request(url, init), { params: Promise.resolve({ path: url.pathname.split('/').slice(3) }) });
       assert.match(result.headers.get('cache-control'), /no-store/);
+      if (input.endsWith('/grants')) grantsStatus = result.status;
       return result;
     }
     seen.push(input);
@@ -877,6 +1038,7 @@ test('directory client and Next handler read list, detail and history through th
     assert.equal(init.redirect, 'manual');
     assert.equal(init.cache, 'no-store');
     if (failureStatus) return Response.json({ detail: 'sensitive upstream text' }, { status: failureStatus });
+    if (input.endsWith('/grants')) return Response.json(grantsReply);
     if (input.includes('/history')) return Response.json({ items: [], next_cursor: null });
     const detail = input.endsWith(`/${id}`);
     return Response.json(detail ? { ...user, display_name: 'Detail fixture' } : { items: [user], has_more: true });
@@ -884,13 +1046,19 @@ test('directory client and Next handler read list, detail and history through th
   const page = await fetchApi(api.directoryListPath('A&B', 25));
   const detail = await fetchApi(api.directoryDetailPath(page.items[0].id));
   const history = await fetchApi(`${listPath}/${id}/history?limit=25&cursor=${id}`);
+  const { requestGrants } = await import('../src/lib/user-grants.ts');
+  const loaded = Promise.withResolvers();
+  requestGrants(id, loaded.resolve);
+  const grantsState = await loaded.promise;
+  assert.equal(grantsStatus, 200);
+  assert.deepEqual(grantsState, { phase: 'ready', grants: mixedGrants });
   assert.deepEqual(page, { items: [user], has_more: true });
   assert.deepEqual(detail, { ...user, display_name: 'Detail fixture' });
   assert.deepEqual(history, { items: [], next_cursor: null });
   assert.deepEqual(seen, [`https://api.example.test/v1/users?q=A%26B&offset=25`, `https://api.example.test/v1/users/${id}`,
-    `https://api.example.test/v1/users/${id}/history?limit=25&cursor=${id}`]);
+    `https://api.example.test/v1/users/${id}/history?limit=25&cursor=${id}`, `https://api.example.test/v1/users/${id}/grants`]);
   for (failureStatus of [401, 403, 404, 503]) {
-    for (const suffix of ['', '/history']) {
+    for (const suffix of ['', '/history', '/grants']) {
       const url = `https://ui.example.test${listPath}/${id}${suffix}`;
       const result = await route.GET(new Request(url), { params: Promise.resolve({ path: new URL(url).pathname.split('/').slice(3) }) });
       assert.equal(result.status, failureStatus);
@@ -898,4 +1066,9 @@ test('directory client and Next handler read list, detail and history through th
       assert.doesNotMatch(await result.text(), /sensitive upstream text/);
     }
   }
+  failureStatus = undefined;
+  grantsReply = { ...grants, hidden_count: 10, role: 'private opaque role' };
+  const result = await globalThis.fetch(`${listPath}/${id}/grants`, { method: 'GET', headers: {} });
+  assert.equal(result.status, 502);
+  assert.doesNotMatch(await result.text(), /hidden_count|private opaque role/);
 });
