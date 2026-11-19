@@ -21,6 +21,12 @@ Owner: Black Raven Studios. Approved development scope, 2026-11-18. This brief s
 5. **Deletion:** Deactivate safely; preserve foreign keys and immutable audit. No irreversible personal-data erasure before separate policy approval.
 6. **Acceptance:** Test CRUD and denials for each role and across tenants; ordinary grant limits; immediate denial on an already-open session after suspension or relevant grant removal; provisioning/activation/duplicates/concurrency; MFA request/decision UI including expired and failed cases; provider failures, audit integrity, RLS, frontend integration, full regression suites. Verify locally; distinguish provider/deployment blockers. Separate A11 commit.
 
+## A11.5 — Ordinary account deactivation
+
+Approved on 2026-11-19 as a new subdivision of A11, not an original standalone assignment. An explicitly authorized same-tenant client Admin may deactivate an ordinary User or SuperUser other than themselves using fresh provider-verified TOTP, a reason and an expected version. Deactivation is BRI-only and distinct from both suspension and deletion. The transaction retires the target's active assignments, invalidates BRI sessions, and appends immutable audit while retaining identity, provenance and business records. No ordinary lifecycle route can reverse deactivation or restore grants. Any future restoration requires independently approved authorization and provisioning.
+
+Keep forced RLS, tenant isolation, the two-eligible-admin invariant and default-deny hosted boundaries. Verify the isolated workflow in two synthetic tenants under the restricted PostgreSQL role, including denial, concurrency, rollback, assignment and session retirement, preservation of history and suspension, and migration checksums/replay. No provider deletion, irreversible erasure, restoration, deletion-request processing, deployment or A11.6 work is authorized.
+
 ## Boundaries for both assignments
 
 Additive checksummed migrations only. No production authentication, hosted administration/configuration writes, public signup, real customer provisioning/data, shared migration, provider setting changes, deployment or push. Use synthetic fixtures and disposable PostgreSQL. Record test results and any externally blocked gate explicitly. No emergency bypass, no modification of prior migration files.

@@ -66,6 +66,18 @@ test('delegation GET and PATCH, including encoded paths, are denied before sessi
   }
 });
 
+test('deactivation GET and PATCH are denied before session lookup, including encoded paths', async () => {
+  for (const mode of [env, { BRI_UI_AUTH_MODE: 'synthetic', BRI_UI_DEV_IDENTITY: 'fixture' }]) {
+    for (const suffix of [`/${id}/deactivation`, `/${id}/%64eactivation`, `/${id}%2Fdeactivation`, `/${id}/%2564eactivation`]) {
+      for (const target of new Set([`${list}${suffix}`, decodeURIComponent(`${list}${suffix}`)])) {
+        await assert.rejects(proxy.prepareProxyRequest(request(suffix), target, mode, unused), status(404));
+        const patch = request(suffix, { method: 'PATCH', body: '{"expected_version":"7","reason":"account_closed"}' });
+        await assert.rejects(proxy.prepareProxyRequest(patch, target, mode, unused), status(404));
+      }
+    }
+  }
+});
+
 test('directory permits only unique list parameters and accepts no detail query parameters', async () => {
   for (const query of ['q=x&q=y', 'offset=0&offset=1', 'limit=25&limit=50', 'role=admin', 'tenant_id=other', 'limit=0', 'limit=101', 'limit=1.5', 'limit=0001', 'offset=-1', 'offset=1e2', 'offset=10001', 'q=%00', `q=${'a'.repeat(129)}`]) {
     await assert.rejects(proxy.prepareProxyRequest(request(`?${query}`), list, env, unused), status(400));

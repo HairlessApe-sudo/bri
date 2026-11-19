@@ -1,6 +1,6 @@
 # A11.3 ordinary-user lifecycle boundary
 
-Scope: [approved A11](../planning/assignments-10-11.md) and the A11.3 product decisions. Extends the directory detail only. Hosted mutations, provider account updates, changes to roles or grants, deactivation, deletion, and MFA recovery remain out of scope.
+Scope: [approved A11](../planning/assignments-10-11.md) and the A11.3 product decisions. Extends the directory detail only. Hosted mutations, provider account updates, changes to roles or grants, deactivation, deletion, and MFA recovery remain out of scope for A11.3. [A11.5 deactivation](user-deactivation.md) is a separate, non-reactivatable transition.
 
 - One verified, active client Admin in one operational tenant may edit only the BRI display name of a same-tenant ordinary User or SuperUser. Display name is not provider identity. Separate explicit tenant-root grants authorize editing, suspension, and reactivation; the latter two also require fresh provider-verified TOTP under the existing 15-minute step-up policy and an allowlisted reason. Browser input can identify the target and requested change, never authority.
 - Only an ordinary administrative suspension made by this workflow is reversible by a client Admin. An unclassified or externally imposed hold defaults to non-reversible. Pending setup, deletion, deactivation, invalid identity binding, and credential quarantine are not alternate paths to reactivation. The account must complete fresh authentication and TOTP after reactivation before opening a new BRI session.

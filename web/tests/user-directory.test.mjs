@@ -193,6 +193,7 @@ test('directory detail renders the detail response rather than relying on the li
   for (const value of ['Detail fixture', 'Active', 'User', 'Verified', id, 'Back to directory']) assert.ok(html.includes(value));
   assert.match(html, /Lifecycle changes are disabled in this release/);
   assert.match(html, /Permission delegation is disabled in this release/);
+  assert.match(html, /Account deactivation is unavailable in this release/);
   assert.doesNotMatch(html, /<form|<input|<select|>Suspend<|>Reactivate<|>Edit display name</);
 });
 
@@ -529,7 +530,7 @@ test('Next dev request logging omits directory search and detail URLs', async ()
   }
 });
 
-test('the release Next handler denies lifecycle and delegation GET without session or upstream and exports no PATCH', async (t) => {
+test('the release Next handler denies staged user GETs without session or upstream and exports no PATCH', async (t) => {
   const previousMode = process.env.BRI_UI_AUTH_MODE;
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = 'test';
@@ -544,7 +545,9 @@ test('the release Next handler denies lifecycle and delegation GET without sessi
   assert.equal(route.PATCH, undefined);
   for (const mode of ['supabase', 'synthetic']) {
     process.env.BRI_UI_AUTH_MODE = mode;
-    for (const suffix of [`/${id}/lifecycle`, `/${id}/delegation`, `/${id}/%64elegation`, `/${id}%2Fdelegation`, `/${id}/%2564elegation`]) {
+    for (const suffix of [`/${id}/lifecycle`, ...['delegation', 'deactivation'].flatMap((name) => [
+      `/${id}/${name}`, `/${id}/%64${name.slice(1)}`, `/${id}%2F${name}`, `/${id}/%2564${name.slice(1)}`,
+    ])]) {
       const result = await route.GET(new Request(`https://ui.example.test${listPath}${suffix}`), {
         params: Promise.resolve({ path: ['v1', 'users', ...suffix.slice(1).split('/').map(decodeURIComponent)] }),
       });
@@ -554,6 +557,174 @@ test('the release Next handler denies lifecycle and delegation GET without sessi
   }
   assert.equal(globalThis.fetch.mock.callCount(), 0);
   assert.equal(sessionLookups, 0);
+});
+
+const deactivationPath = `/v1/users/${id}/deactivation`;
+const activeDeactivation = { version: '9007199254740993', status: 'active' };
+const deactivated = { version: '9007199254740994', status: 'deactivated' };
+
+test('deactivation requires reason, review and confirmation and waits for a verified acknowledgement', async () => {
+  const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
+  const calls = [];
+  const pending = Promise.withResolvers();
+  const flow = createDeactivationFlow(id, async (path, init) => {
+    calls.push([path, init]);
+    return init.method === 'GET' ? Response.json(activeDeactivation) : pending.promise;
+  });
+  assert.throws(() => createDeactivationFlow(id), /transport/);
+  assert.throws(() => createDeactivationFlow(`${id}/bad`, () => {}), /ID/);
+  assert.deepEqual(calls, []);
+  await flow.reload();
+  flow.chooseReason('unapproved');
+  flow.review();
+  await flow.submit(true);
+  flow.chooseReason('account_closed');
+  await flow.submit(true);
+  flow.review();
+  await flow.submit(false);
+  assert.deepEqual(calls, [[deactivationPath, { method: 'GET' }]]);
+  const saving = flow.submit(true);
+  await flow.submit(true);
+  await flow.reload();
+  assert.deepEqual(calls[1], [deactivationPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_version: activeDeactivation.version, reason: 'account_closed' }) }]);
+  assert.equal(calls.length, 2);
+  assert.equal(flow.getSnapshot().phase, 'saving');
+  assert.deepEqual(flow.getSnapshot().state, activeDeactivation);
+  pending.resolve(Response.json(deactivated));
+  await saving;
+  assert.equal(flow.getSnapshot().phase, 'ready');
+  assert.deepEqual(flow.getSnapshot().state, deactivated);
+  flow.chooseReason('account_closed');
+  flow.review();
+  await flow.submit(true);
+  assert.equal(calls.length, 2);
+});
+
+test('deactivation conflicts require explicit reload, a new reason and a new review', async () => {
+  const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
+  const calls = [];
+  const fresh = { version: '9007199254740995', status: 'suspended' };
+  const replies = [Response.json(activeDeactivation), new Response(null, { status: 409 }),
+    Response.json(fresh), Response.json({ ...deactivated, version: '9007199254740996' })];
+  const flow = createDeactivationFlow(id, async (_, init) => { calls.push(init); return replies.shift(); });
+  await flow.reload();
+  flow.chooseReason('access_review');
+  flow.review();
+  await flow.submit(true);
+  assert.equal(flow.getSnapshot().phase, 'refresh-required');
+  assert.match(flow.getSnapshot().error, /state changed.*Reload/);
+  assert.equal(flow.getSnapshot().reason, '');
+  assert.equal(flow.getSnapshot().reviewing, false);
+  flow.chooseReason('policy_violation');
+  flow.review();
+  await flow.submit(true);
+  assert.equal(calls.length, 2);
+  await flow.reload();
+  await flow.submit(true);
+  assert.deepEqual(flow.getSnapshot().state, fresh);
+  assert.equal(calls.length, 3);
+  flow.chooseReason('policy_violation');
+  flow.review();
+  await flow.submit(true);
+  assert.deepEqual(JSON.parse(calls[3].body), { expected_version: fresh.version, reason: 'policy_violation' });
+});
+
+test('deactivation rejects malformed decimal versions on read', async () => {
+  const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
+  for (const version of [1, '', '-1', '01', '1.0', '1e0', '1\n', '１', '9223372036854775808']) {
+    const flow = createDeactivationFlow(id, async () => Response.json({ status: 'active', version }));
+    await flow.reload();
+    assert.equal(flow.getSnapshot().phase, 'refresh-required', `Accepted ${JSON.stringify(version)}`);
+    assert.equal(flow.getSnapshot().state, null);
+  }
+});
+
+test('deactivation failures never publish success or expose transport error text', async () => {
+  const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
+  for (const [reply, message, hideState] of [
+    [() => Response.json({ detail: 'Recent verified TOTP required' }, { status: 403 }), /verified TOTP.*reload/i, true],
+    [() => Response.json({ detail: 'private' }, { status: 403 }), /denied/i, true],
+    [() => new Response(null, { status: 401 }), /verified session/i, true],
+    [() => new Response(null, { status: 404 }), /not available/i, true],
+    [() => new Response(null, { status: 412 }), /state changed/i, false],
+    [() => new Response('private'), /could not confirm/i, false],
+    [() => { throw new Error('private'); }, /could not confirm/i, false],
+    [() => Response.json({ ...deactivated, version: activeDeactivation.version }), /could not confirm/i, false],
+    [() => Response.json({ ...deactivated, status: 'suspended' }), /could not confirm/i, false],
+    [() => Response.json({ ...deactivated, version: '1e3' }), /could not confirm/i, false],
+    [() => Response.json({ ...deactivated, extra: 'private' }), /could not confirm/i, false],
+  ]) {
+    const flow = createDeactivationFlow(id, async (_, init) => init.method === 'GET' ? Response.json(activeDeactivation) : reply());
+    await flow.reload();
+    flow.chooseReason('access_review');
+    flow.review();
+    await flow.submit(true);
+    const view = flow.getSnapshot();
+    assert.equal(view.phase, 'refresh-required');
+    assert.deepEqual(view.state, hideState ? null : activeDeactivation);
+    assert.match(view.error, message);
+    assert.doesNotMatch(view.error, /private/);
+  }
+});
+
+test('deactivation stores isolate late updates across target and transport changes', async () => {
+  const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
+  const other = '00000000-0000-4000-8000-000000000002';
+  const patch = Promise.withResolvers();
+  const calls = [];
+  const originalTransport = async (path, init) => {
+    calls.push([path, init.method]);
+    return init.method === 'PATCH' ? patch.promise : Response.json(activeDeactivation);
+  };
+  const original = createDeactivationFlow(id, originalTransport);
+  await original.reload();
+  original.chooseReason('account_closed');
+  original.review();
+  const saving = original.submit(true);
+  const notifications = [];
+  const unsubscribe = original.subscribe(() => notifications.push(original.getSnapshot()));
+  unsubscribe();
+  const changedTarget = createDeactivationFlow(other, originalTransport);
+  await changedTarget.reload();
+  const changedTransport = createDeactivationFlow(other, async (path, init) => {
+    calls.push([path, init.method]);
+    return Response.json({ status: 'suspended', version: '32' });
+  });
+  assert.equal(changedTransport.getSnapshot().phase, 'idle');
+  await changedTransport.submit(true);
+  await changedTransport.reload();
+  patch.resolve(Response.json(deactivated));
+  await saving;
+  assert.deepEqual(notifications, []);
+  assert.deepEqual(changedTarget.getSnapshot().state, activeDeactivation);
+  assert.deepEqual(changedTransport.getSnapshot().state, { status: 'suspended', version: '32' });
+  assert.deepEqual(calls, [[deactivationPath, 'GET'], [deactivationPath, 'PATCH'],
+    [`/v1/users/${other}/deactivation`, 'GET'], [`/v1/users/${other}/deactivation`, 'GET']]);
+});
+
+test('staged deactivation renders a distinct warning, bounded reasons and explicit confirmation', async () => {
+  const { DeactivationPanel, StagedDeactivationDetail } = await import('../src/components/user-deactivation.tsx');
+  const html = render(StagedDeactivationDetail, { data: user, transport: () => assert.fail('No transport on render') });
+  assert.match(html, /cannot be reversed through ordinary account management/i);
+  assert.match(html, /not deletion/i);
+  assert.match(html, /verified TOTP/i);
+  assert.match(html, /Load deactivation state/);
+  assert.doesNotMatch(html, /Account deactivation is unavailable|<form|<select/);
+  const ready = { phase: 'ready', state: activeDeactivation, reason: '', reviewing: false };
+  const renderPanel = (view) => render(DeactivationPanel, { view, flow: {}, id });
+  const reasons = renderPanel(ready);
+  assert.deepEqual([...reasons.matchAll(/<option value="([a-z_]+)"/g)].map((m) => m[1]), ['account_closed', 'access_review', 'policy_violation']);
+  assert.match(reasons, /Review deactivation/);
+  assert.doesNotMatch(reasons, /Confirm deactivation/);
+  const confirmation = renderPanel({ ...ready, reason: 'access_review', reviewing: true });
+  assert.match(confirmation, /Access review/);
+  assert.ok(confirmation.includes(id));
+  assert.match(confirmation, /<input(?=[^>]*name="confirm")(?=[^>]*\brequired\b)[^>]*>/);
+  assert.match(confirmation, /Confirm deactivation/);
+  assert.doesNotMatch(confirmation, /expected_version|9007199254740993|name="totp"/);
+  assert.doesNotMatch(renderPanel({ ...ready, state: deactivated }), /<form|<select|Review deactivation/);
+  assert.doesNotMatch(renderPanel({ ...ready, phase: 'refresh-required' }), /<form|<select|Review deactivation/);
 });
 
 test('directory client and Next handler read list and detail through the same-origin boundary', async (t) => {
