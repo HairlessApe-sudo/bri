@@ -30,7 +30,8 @@ PIPE = 'npipe:////./pipe/dockerDesktopLinuxEngine'
 NATIVE = {'test_security_lifecycle_postgres', 'test_provider_security_events_postgres',
           'test_privileged_approvals_pg', 'test_approval_routes', 'test_reenrollment_pg',
           'test_user_directory_postgres', 'test_user_provisioning_postgres', 'test_user_provisioning_api',
-          'test_user_lifecycle_postgres', 'test_user_lifecycle_api', 'test_knowledge_authorization_postgres'}
+          'test_user_lifecycle_postgres', 'test_user_lifecycle_api', 'test_knowledge_authorization_postgres',
+          'test_permission_delegation_postgres', 'test_user_delegation_api'}
 GOV = 'test_client_governance_pg'
 
 
@@ -246,7 +247,7 @@ def suite_run(pg_bin, core_env, adapter, fresh_database, *, fixture_suites=False
                 connect = stack.enter_context(fresh_database())
                 from scripts.db.seed_synthetic_data import insert_or_verify
                 require(fixture.FIXTURE.get('synthetic_only') is True, 'expected synthetic RLS fixture')
-                with connect('bri_app') as c:
+                with connect('postgres') as c:
                     c.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
                     def ensure(table, columns, values, keys):
                         insert_or_verify(c, table=table, columns=columns, values=values, key_columns=keys)

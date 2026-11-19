@@ -49,6 +49,22 @@ class SyntheticSeedTests(unittest.TestCase):
         self.assertNotIn("UPDATE", " ".join(connection.statements).upper())
         self.assertNotIn("DELETE", " ".join(connection.statements).upper())
 
+    def test_operator_provisioned_catalog_is_verified_without_attempting_insert(self):
+        values = ("fixture-tenant", "fixture-role", "Fixture role")
+        for existing in (values, None):
+            connection = FakeConnection(existing_row=existing)
+            def verify():
+                return insert_or_verify(connection, table="bri.app_roles",
+                                        columns=("tenant_id", "role_id", "display_name"),
+                                        values=values, key_columns=("tenant_id", "role_id"), verify_only=True)
+            if existing is None:
+                with self.assertRaises(SeedConflict):
+                    verify()
+            else:
+                self.assertFalse(verify())
+            self.assertEqual(len(connection.statements), 1)
+            self.assertTrue(connection.statements[0].startswith("SELECT"))
+
     def test_existing_conflicting_row_fails_closed(self):
         connection = FakeConnection(
             inserted_row=None,

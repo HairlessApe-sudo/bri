@@ -261,6 +261,7 @@ class UserDirectoryTests(unittest.TestCase):
         with self.connect('postgres') as db:
             db.execute("INSERT INTO bri.app_roles VALUES (%s,'unassigned','Unassigned')", (self.tenant,))
             db.execute("INSERT INTO bri.role_permissions VALUES (%s,'unassigned',%s)", (self.tenant, PERMISSION))
+            db.execute("INSERT INTO bri.role_permissions VALUES (%s,'reset','document:read')", (self.tenant,))
         with self.connect('bri_app') as db:
             db.execute("SELECT set_config('bri.tenant_id',%s,true), set_config('bri.auth_user_id',%s,true)",
                        (self.tenant, str(self.admin[1])))
@@ -273,11 +274,11 @@ class UserDirectoryTests(unittest.TestCase):
                 (("INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id) "
                   "VALUES (%s,%s,'unassigned','root')"), (self.tenant, self.admin[0])),
             ]
-            db.execute("INSERT INTO bri.role_permissions VALUES (%s,'reset','document:read')", (self.tenant,))
             for query, args in attempts:
                 with self.subTest(query=query), self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
                     db.execute(query, args)
-            self.assertEqual(db.execute('DELETE FROM bri.role_permissions WHERE permission=%s', (PERMISSION,)).rowcount, 0)
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute('DELETE FROM bri.role_permissions WHERE permission=%s', (PERMISSION,))
         with self.connect('postgres') as db, self.assertRaises(psycopg.errors.CheckViolation), db.transaction():
             db.execute('UPDATE bri.auth_principals SET display_name=%s WHERE principal_id=%s',
                        ('x' * 129, self.ordinary[0]))

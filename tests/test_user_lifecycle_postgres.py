@@ -235,7 +235,8 @@ class UserLifecycleTests(unittest.TestCase):
             ):
                 with self.subTest(statement=statement), self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
                     db.execute(statement)
-            self.assertEqual(db.execute("DELETE FROM bri.role_permissions WHERE role_id='life'").rowcount, 0)
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute("DELETE FROM bri.role_permissions WHERE role_id='life'")
 
     def test_concurrent_edits_with_equal_version_have_one_winner(self):
         version = self.read()[4]

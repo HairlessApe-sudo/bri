@@ -47,21 +47,23 @@ def insert_or_verify(
     columns: tuple[str, ...],
     values: tuple[Any, ...],
     key_columns: tuple[str, ...],
+    verify_only: bool = False,
 ) -> bool:
-    """Insert once; on conflict require exact fixture equality and never update."""
+    """Insert once or verify an operator-provisioned row without changing it."""
     if len(columns) != len(values) or not key_columns or not set(key_columns) <= set(columns):
         raise ValueError("invalid synthetic seed row shape")
     _validate_identifiers(table, (*columns, *key_columns))
     names = ", ".join(columns)
     placeholders = ", ".join("%s" for _ in columns)
     keys = ", ".join(key_columns)
-    inserted = connection.execute(
-        f"INSERT INTO {table} ({names}) VALUES ({placeholders}) "
-        f"ON CONFLICT DO NOTHING RETURNING {keys}",
-        values,
-    ).fetchone()
-    if inserted is not None:
-        return True
+    if not verify_only:
+        inserted = connection.execute(
+            f"INSERT INTO {table} ({names}) VALUES ({placeholders}) "
+            f"ON CONFLICT DO NOTHING RETURNING {keys}",
+            values,
+        ).fetchone()
+        if inserted is not None:
+            return True
 
     where = " AND ".join(f"{column}=%s" for column in key_columns)
     key_values = tuple(values[columns.index(column)] for column in key_columns)
@@ -86,7 +88,8 @@ def seed_tenant(
 
     def put(table: str, columns: tuple[str, ...], values: tuple[Any, ...], keys: tuple[str, ...]) -> None:
         nonlocal inserted_count, verified_count
-        if insert_or_verify(connection, table=table, columns=columns, values=values, key_columns=keys):
+        if insert_or_verify(connection, table=table, columns=columns, values=values, key_columns=keys,
+                            verify_only=table in {"bri.app_roles", "bri.role_permissions"}):
             inserted_count += 1
         else:
             verified_count += 1

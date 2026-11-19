@@ -123,6 +123,7 @@ class TenantRlsIntegrationTests(unittest.TestCase):
                 columns=columns,
                 values=values,
                 key_columns=keys,
+                verify_only=table in {"bri.app_roles", "bri.role_permissions"},
             )
 
         for tenant in FIXTURE["tenants"]:
@@ -180,16 +181,14 @@ class TenantRlsIntegrationTests(unittest.TestCase):
                     (f"tenant-synth-denied-write", second["display_name"], second["sector"]),
                 )
 
-    def test_serializable_role_definition_change_fails_closed(self) -> None:
+    def test_app_role_cannot_modify_shared_role_catalog(self) -> None:
         tenant = FIXTURE["tenants"][0]
         self._tenant_context(tenant["tenant_id"])
-        with self.assertRaises(psycopg.errors.RaiseException) as rejected, self.conn.transaction():
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege), self.conn.transaction():
             self.conn.execute(
                 "INSERT INTO bri.role_permissions(tenant_id, role_id, permission) VALUES (%s,%s,%s)",
                 (tenant["tenant_id"], tenant["roles"][0]["role_id"], "synthetic:isolation_probe"),
             )
-        self.assertEqual(rejected.exception.sqlstate, "P0001")
-        self.assertEqual(rejected.exception.diag.message_primary, "role changes require read committed isolation")
 
     def test_missing_tenant_context_denies_reads_and_writes(self) -> None:
         self.assertEqual(self.conn.execute("SELECT count(*) FROM bri.tenants").fetchone()[0], 0)

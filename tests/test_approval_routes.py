@@ -698,13 +698,11 @@ class StagedApprovalRoutes(unittest.TestCase):
     def test_runtime_cannot_delete_reset_permissions(self):
         with self.connect("bri_app") as db:
             db.execute("SELECT set_config('bri.tenant_id',%s,true)", (self.t,))
-            self.assertEqual(
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
                 db.execute(
                     "DELETE FROM bri.role_permissions WHERE tenant_id=%s AND permission='user:mfa_reset:decide'",
                     (self.t,),
-                ).rowcount,
-                0,
-            )
+                )
         with self.connect("postgres") as db:
             self.assertTrue(
                 db.execute(

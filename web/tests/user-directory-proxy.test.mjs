@@ -54,6 +54,18 @@ test('lifecycle GET and PATCH are blocked before session lookup in hosted and sy
   }
 });
 
+test('delegation GET and PATCH, including encoded paths, are denied before session lookup', async () => {
+  for (const mode of [env, { BRI_UI_AUTH_MODE: 'synthetic', BRI_UI_DEV_IDENTITY: 'fixture' }]) {
+    for (const suffix of [`/${id}/delegation`, `/${id}/%64elegation`, `/${id}%2Fdelegation`, `/${id}/%2564elegation`]) {
+      const path = `${list}${suffix}`;
+      for (const target of new Set([path, decodeURIComponent(path)])) {
+        await assert.rejects(proxy.prepareProxyRequest(request(`${suffix}?node=fixture&permission=knowledge%3Aread`), target, mode, unused), status(404));
+        await assert.rejects(proxy.prepareProxyRequest(request(suffix, { method: 'PATCH', body: '{}' }), target, mode, unused), status(404));
+      }
+    }
+  }
+});
+
 test('directory permits only unique list parameters and accepts no detail query parameters', async () => {
   for (const query of ['q=x&q=y', 'offset=0&offset=1', 'limit=25&limit=50', 'role=admin', 'tenant_id=other', 'limit=0', 'limit=101', 'limit=1.5', 'limit=0001', 'offset=-1', 'offset=1e2', 'offset=10001', 'q=%00', `q=${'a'.repeat(129)}`]) {
     await assert.rejects(proxy.prepareProxyRequest(request(`?${query}`), list, env, unused), status(400));

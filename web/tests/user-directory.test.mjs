@@ -192,6 +192,7 @@ test('directory detail renders the detail response rather than relying on the li
   const html = render(DirectoryDetail, { data: { ...user, display_name: 'Detail fixture', status: 'active', role: 'user', mfa_status: 'verified' } });
   for (const value of ['Detail fixture', 'Active', 'User', 'Verified', id, 'Back to directory']) assert.ok(html.includes(value));
   assert.match(html, /Lifecycle changes are disabled in this release/);
+  assert.match(html, /Permission delegation is disabled in this release/);
   assert.doesNotMatch(html, /<form|<input|<select|>Suspend<|>Reactivate<|>Edit display name</);
 });
 
@@ -381,6 +382,145 @@ test('the staged detail panel shows only permitted buttons, the selected form, a
   assert.doesNotMatch(staged, /<dt>Status<\/dt>|Lifecycle changes are disabled/);
 });
 
+const delegationPath = `/v1/users/${id}/delegation`;
+const nodes = [{ id: 'Exact + & Node', label: 'Fixture node' }, { id: 'other', label: 'Other node' }];
+const permission = 'knowledge:read';
+const initialGrant = { version: '  W/z+==  ', granted: false };
+
+test('staged delegation loads only an exact selected pair and confirms grant then revoke using opaque versions', async () => {
+  const { createDelegationFlow } = await import('../src/lib/user-delegation.ts');
+  const calls = [];
+  let view;
+  let complete;
+  const flow = createDelegationFlow(id, nodes, async (path, init) => {
+    calls.push([path, init]);
+    if (init.method === 'GET') return Response.json(initialGrant);
+    return new Promise((resolve) => { complete = resolve; });
+  }, (next) => { view = next; });
+  await flow.refresh();
+  flow.choose(nodes[0].id, 'knowledge:write');
+  await flow.refresh();
+  flow.choose('Exact + &', permission);
+  await flow.refresh();
+  assert.deepEqual(calls, []);
+  flow.choose(nodes[0].id, permission);
+  await flow.refresh();
+  assert.deepEqual(calls, [[`${delegationPath}?node=Exact+%2B+%26+Node&permission=knowledge%3Aread`, { method: 'GET' }]]);
+  assert.deepEqual(view.state, initialGrant);
+  flow.select('revoke');
+  await flow.submit('revoke', true);
+  flow.select('grant');
+  await flow.submit('grant', false);
+  assert.equal(calls.length, 1);
+  const pending = flow.submit('grant', true);
+  await flow.submit('grant', true);
+  await flow.refresh();
+  flow.choose(nodes[1].id, permission);
+  assert.deepEqual(view.state, initialGrant);
+  assert.equal(view.phase, 'saving');
+  assert.deepEqual(calls[1], [delegationPath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node: nodes[0].id, permission, action: 'grant', expected_version: initialGrant.version }) }]);
+  assert.equal(calls.length, 2);
+  complete(Response.json({ granted: true, version: '05' }));
+  await pending;
+  assert.equal(view.state.granted, true);
+  flow.select('revoke');
+  const revoke = flow.submit('revoke', true);
+  assert.deepEqual(JSON.parse(calls[2][1].body), { node: nodes[0].id, permission, action: 'revoke', expected_version: '05' });
+  complete(Response.json({ granted: false, version: '02' }));
+  await revoke;
+  assert.equal(view.state.granted, false);
+  flow.choose(nodes[1].id, 'organisation:read');
+  assert.equal(view.state, null);
+  await flow.submit('grant', true);
+  assert.equal(calls.length, 3);
+});
+
+test('delegation conflicts require a fresh read and a new action, never an automatic retry', async () => {
+  const { createDelegationFlow } = await import('../src/lib/user-delegation.ts');
+  for (const status of [409, 412]) {
+    let view;
+    const calls = [];
+    const replies = [Response.json(initialGrant), Response.json({ detail: 'private conflict' }, { status }),
+      Response.json({ ...initialGrant, version: 'fresh' }), Response.json({ granted: true, version: 'changed' })];
+    const flow = createDelegationFlow(id, nodes, async (_, init) => { calls.push(init); return replies.shift(); }, (next) => { view = next; });
+    flow.choose(nodes[0].id, permission);
+    await flow.refresh();
+    flow.select('grant');
+    await flow.submit('grant', true);
+    assert.equal(view.phase, 'refresh-required');
+    assert.equal(view.action, null);
+    assert.deepEqual(view.state, initialGrant);
+    assert.match(view.error, /changed.*reload/i);
+    assert.doesNotMatch(view.error, /private/);
+    flow.select('grant');
+    await flow.submit('grant', true);
+    assert.equal(calls.length, 2);
+    await flow.refresh();
+    await flow.submit('grant', true);
+    assert.equal(calls.length, 3);
+    flow.select('grant');
+    await flow.submit('grant', true);
+    assert.deepEqual(calls.map(({ method }) => method), ['GET', 'PATCH', 'GET', 'PATCH']);
+    assert.equal(JSON.parse(calls[3].body).expected_version, 'fresh');
+  }
+});
+
+test('delegation failures and invalid acknowledgments leave no confirmed change', async () => {
+  const { createDelegationFlow } = await import('../src/lib/user-delegation.ts');
+  for (const [reply, message, hideState] of [
+    [() => Response.json({ detail: 'Recent verified TOTP required' }, { status: 403 }), /fresh TOTP.*reload/i, true],
+    [() => Response.json({ detail: 'private' }, { status: 403 }), /denied/i, true],
+    [() => new Response(null, { status: 401 }), /verified session/i, true],
+    [() => new Response(null, { status: 404 }), /not available/i, true],
+    [() => new Response('private', { status: 503 }), /could not confirm/i, false],
+    [() => new Response('private'), /could not confirm/i, false],
+    [() => { throw new Error('private'); }, /could not confirm/i, false],
+    [() => Response.json({ version: initialGrant.version, granted: true }), /could not confirm/i, false],
+    [() => Response.json({ version: 'changed', granted: false }), /could not confirm/i, false],
+    [() => Response.json({ version: 'changed', granted: 'true' }), /could not confirm/i, false],
+  ]) {
+    let view;
+    const methods = [];
+    const flow = createDelegationFlow(id, nodes, async (_, init) => {
+      methods.push(init.method);
+      return init.method === 'GET' ? Response.json(initialGrant) : reply();
+    }, (next) => { view = next; });
+    flow.choose(nodes[0].id, permission);
+    await flow.refresh();
+    flow.select('grant');
+    await flow.submit('grant', true);
+    assert.equal(view.phase, 'refresh-required');
+    assert.equal(view.action, null);
+    assert.deepEqual(view.state, hideState ? null : initialGrant);
+    assert.match(view.error, message);
+    assert.doesNotMatch(view.error, /private/);
+    await flow.submit('grant', true);
+    assert.deepEqual(methods, ['GET', 'PATCH']);
+  }
+});
+
+test('the staged detail offers exact nodes and only the two approved read permissions', async () => {
+  const { DelegationPanel, StagedDelegationDetail } = await import('../src/components/user-delegation.tsx');
+  const html = render(StagedDelegationDetail, { data: user, nodes, transport: () => assert.fail('No transport on render') });
+  assert.match(html, /User details[^]*Fixture node[^]*Other node/);
+  assert.deepEqual([...html.matchAll(/<option value="([^"]+:read)"/g)].map((m) => m[1]), ['organisation:read', 'knowledge:read']);
+  assert.doesNotMatch(html, /Permission delegation is disabled|<form|type="password"/);
+  for (const [granted, action] of [[false, 'grant'], [true, 'revoke']]) {
+    const view = { phase: 'ready', state: { ...initialGrant, granted }, action, node: nodes[0].id, permission };
+    const confirmation = render(DelegationPanel, { view, nodes });
+    assert.match(confirmation, new RegExp(`Grant state: ${granted ? 'Granted' : 'Not granted'}`));
+    assert.match(confirmation, /<input(?=[^>]*name="confirm")(?=[^>]*\brequired\b)[^>]*>/);
+    assert.match(confirmation, new RegExp(`Confirm ${action}`));
+    assert.match(confirmation, /Knowledge read[^]*Exact \+ &amp; Node/);
+    assert.doesNotMatch(confirmation, /name="(?:role|tenant_id|expected_version|totp)"|W\/z/);
+    const stale = render(DelegationPanel, { view: { ...view, phase: 'refresh-required', action: null }, nodes });
+    assert.match(stale, /Last confirmed grant state/);
+    assert.match(stale, /Reload grant state/);
+    assert.doesNotMatch(stale, /<form|>Grant<|>Revoke</);
+  }
+});
+
 test('Next dev request logging omits directory search and detail URLs', async () => {
   const config = (await import('../next.config.ts')).default;
   const rules = config.logging?.incomingRequests?.ignore ?? [];
@@ -389,7 +529,7 @@ test('Next dev request logging omits directory search and detail URLs', async ()
   }
 });
 
-test('the release Next handler denies lifecycle GET without reaching a session or upstream and exports no PATCH', async (t) => {
+test('the release Next handler denies lifecycle and delegation GET without session or upstream and exports no PATCH', async (t) => {
   const previousMode = process.env.BRI_UI_AUTH_MODE;
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = 'test';
@@ -397,17 +537,23 @@ test('the release Next handler denies lifecycle GET without reaching a session o
     if (previousMode === undefined) delete process.env.BRI_UI_AUTH_MODE; else process.env.BRI_UI_AUTH_MODE = previousMode;
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnv;
   });
-  const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('Unexpected upstream'); });
+  t.mock.method(globalThis, 'fetch', () => { throw new Error('Unexpected upstream'); });
+  let sessionLookups = 0;
+  globalThis.directoryTestSession = () => { sessionLookups++; throw new Error('Unexpected session lookup'); };
+  t.after(() => { delete globalThis.directoryTestSession; });
   assert.equal(route.PATCH, undefined);
   for (const mode of ['supabase', 'synthetic']) {
     process.env.BRI_UI_AUTH_MODE = mode;
-    const result = await route.GET(new Request(`https://ui.example.test/api/bri${lifecyclePath}`), {
-      params: Promise.resolve({ path: ['v1', 'users', id, 'lifecycle'] }),
-    });
-    assert.equal(result.status, 404);
-    assert.equal(result.headers.get('cache-control'), 'no-store');
+    for (const suffix of [`/${id}/lifecycle`, `/${id}/delegation`, `/${id}/%64elegation`, `/${id}%2Fdelegation`, `/${id}/%2564elegation`]) {
+      const result = await route.GET(new Request(`https://ui.example.test${listPath}${suffix}`), {
+        params: Promise.resolve({ path: ['v1', 'users', ...suffix.slice(1).split('/').map(decodeURIComponent)] }),
+      });
+      assert.equal(result.status, 404);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+    }
   }
-  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(globalThis.fetch.mock.callCount(), 0);
+  assert.equal(sessionLookups, 0);
 });
 
 test('directory client and Next handler read list and detail through the same-origin boundary', async (t) => {
