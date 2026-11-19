@@ -1,0 +1,17 @@
+# A11.2 user provisioning release boundary
+
+The approved scope is [A11](../planning/assignments-10-11.md). A11.2 does not authorize production authentication, hosted writes, provider configuration, public signup, or real customer onboarding. Local verification must use synthetic identities, an isolated provider fixture, and disposable PostgreSQL. Fixture results are not evidence that invitations were sent by the deployed provider.
+
+## Trust boundaries
+
+- A client Admin may request a new ordinary User account only in their single server-resolved operational client, with an explicit tenant-root grant and fresh provider-verified TOTP. The target role, tenant, actor, and provider authority are never chosen by the browser. Pending setup must not establish a usable BRI session or confer any grants.
+- Persist a pending request before dispatch. A server-only worker receives only the minimum invitation data and records the outcome. A duplicate request cannot resend an invitation. A timeout, lost acknowledgement, or unclear provider result remains unresolved; only independently verified no-effect evidence may permit another attempt. Reconciliation may bind a concrete provider issuer and user ID only with authenticated evidence tied to the exact operation. Email address, existence of an upstream account, editable user metadata, and browser callbacks are not binding evidence.
+- Activation is a separate trust boundary: it requires the exact already-bound issuer and subject and verified password authentication and TOTP after invitation dispatch. Persist activation and its audit event atomically. Activation grants no additional roles and does not create a BRI session; normal session start and resource grants still apply. Record correlation, actor/subject where verified, tenant, transition and outcome, not email, tokens, passwords, invite URLs or TOTP material.
+
+The staged Admin API returns the server-issued account UUID and status, while subsequent status reads take the original client-generated request key in the URL. The request key is scoped to the verified tenant and is not authority. The UI keeps it across an explicit retry or status check and validates that a receipt still identifies the same account. The worker takes the server-issued UUID, not the request key.
+
+## External verification before any release
+
+Supabase documents server-side Admin invitation (`inviteUserByEmail`) and a user setup link. See the [Supabase invitation documentation](https://supabase.com/docs/guides/auth/users#inviting-users). An invitation acknowledgement is not proof of delivery, completed setup, or activation. The documentation reviewed does not establish a durable operation-bound result after a lost response. Do not attach an existing or possibly unrelated provider identity on that basis.
+
+Before an authorized nonproduction integration, select an isolated provider project and approve the fixed setup destination, link lifetime and email handling. Verify the redirect allowlist and Site URL: the provider documents silent fallback to Site URL when the requested redirect is not allowed. Demonstrate exact operation-to-subject binding and recovery after ambiguous outcomes, including duplicate requests; verify password/TOTP evidence from the actual provider and the fresh BRI session path; and provision separate worker credentials with approved custody. Keep the hosted feature disabled until these gates are satisfied. No public or environment toggle substitutes for approval.

@@ -3,6 +3,13 @@
 Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A11.2 — Secure user provisioning (2026-11-19)
+
+- Added an isolated provisioning and activation path. A verified client Admin needs a current BRI session, tenant-root `user:provision:create`, and recent TOTP to create a pending ordinary User. Pending accounts cannot start a BRI session. Activation requires verified password and TOTP evidence after dispatch for the exact provider identity bound to the invitation; no session or role grant is created by activation.
+- Migration `0018_user_provisioning.sql` adds forced RLS, tenant-local deduplication, fenced worker attempts and immutable audit transitions. Only proof that an attempt had no effect permits an invitation retry; unconfirmed outcomes remain pending and cannot trigger a resend. Request and status responses exclude contact data and provider identifiers. No grants or worker logins are seeded.
+- The Create User form and status workflow are exercised with an injected test transport. The shipped directory displays an unavailable notice; the normal API rejects provisioning and the proxy cannot forward it. No provider or hosted database was contacted. See [the release boundary](../architecture/user-provisioning.md) for outstanding nonproduction provider checks and operator prerequisites.
+- Verified: 51 focused backend tests, including 11 disposable PostgreSQL provisioning and staged-API tests; two verifier guard tests; 18 focused web tests; TypeScript checking and optimized build. Disposable migration checksums and replay passed for 0001–0018. A11.3 is out of scope.
+
 ## A11.1 — Tenant-scoped user directory (2026-11-19)
 
 - Implemented the read-only `/users` workspace screen and `GET /v1/users` (literal name or exact UUID search, bounded pagination) and `GET /v1/users/{id}`. A10 at `06d3927` is the baseline. No synthetic-mode access, provider account lookup, provisioning, or hosted writes.

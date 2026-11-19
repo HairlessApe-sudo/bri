@@ -29,7 +29,7 @@ SOCKET = 'unix:///var/run/docker.sock'
 PIPE = 'npipe:////./pipe/dockerDesktopLinuxEngine'
 NATIVE = {'test_security_lifecycle_postgres', 'test_provider_security_events_postgres',
           'test_privileged_approvals_pg', 'test_approval_routes', 'test_reenrollment_pg',
-          'test_user_directory_postgres'}
+          'test_user_directory_postgres', 'test_user_provisioning_postgres', 'test_user_provisioning_api'}
 GOV = 'test_client_governance_pg'
 
 

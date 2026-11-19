@@ -44,6 +44,7 @@ from bri.api.approval_routes import create_approval_router
 from bri.api.boundary_audit import audit_denial, mark
 from bri.api.database import Database, DatabaseUnavailable, ProtectedAccessDenied, TenantSession
 from bri.api.user_directory import create_user_directory_router
+from bri.api.user_provisioning import create_user_provisioning_router
 from bri.knowledge.query import EvidenceCitation, KnowledgeItem, answer_question
 
 
@@ -1188,6 +1189,7 @@ def create_app(
         configuration_services_factory = hosted_services
 
     app.include_router(create_approval_router(principal_dependency=current_principal))
+    app.include_router(create_user_provisioning_router())
     app.include_router(create_user_directory_router(
         principal_dependency=current_principal,
         protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),

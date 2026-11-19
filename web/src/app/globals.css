@@ -10,3 +10,7 @@
 .directory-pagination .source-pill,.directory-back{background:var(--surface);font-size:11px;cursor:pointer}
 .directory-pagination button:disabled{opacity:.55;cursor:default}
 .directory-user{padding:3px 0;border:0;background:transparent;color:var(--forest);text-align:left;text-decoration:underline;text-underline-offset:3px;font-weight:600;cursor:pointer}
+.directory-create{max-width:28rem;margin:16px 0;color:var(--forest)}
+.directory-create summary{cursor:pointer;font-weight:600}
+.directory-create-fields{border:0;padding:0;margin:0;min-width:0}
+.directory-create-fields:disabled .auth-submit{cursor:not-allowed}

@@ -37,6 +37,14 @@ test('directory rejects unapproved methods and non-UUID detail paths before sess
   }
 });
 
+test('provisioning POST and status GET are not forwarded in hosted or synthetic mode', async () => {
+  for (const mode of [env, { BRI_UI_AUTH_MODE: 'synthetic', BRI_UI_DEV_IDENTITY: 'fixture' }]) {
+    const post = request('/provisioning', { method: 'POST', body: JSON.stringify({ request_id: id, display_name: 'Fixture', email: 'fixture@example.test' }) });
+    await assert.rejects(proxy.prepareProxyRequest(post, `${list}/provisioning`, mode, unused), status(404));
+    await assert.rejects(proxy.prepareProxyRequest(request(`/provisioning/${id}`), `${list}/provisioning/${id}`, mode, unused), status(404));
+  }
+});
+
 test('directory permits only unique list parameters and accepts no detail query parameters', async () => {
   for (const query of ['q=x&q=y', 'offset=0&offset=1', 'limit=25&limit=50', 'role=admin', 'tenant_id=other', 'limit=0', 'limit=101', 'limit=1.5', 'limit=0001', 'offset=-1', 'offset=1e2', 'offset=10001', 'q=%00', `q=${'a'.repeat(129)}`]) {
     await assert.rejects(proxy.prepareProxyRequest(request(`?${query}`), list, env, unused), status(400));

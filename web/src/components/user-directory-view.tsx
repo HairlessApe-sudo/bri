@@ -1,3 +1,4 @@
+import { DisabledCreateUser } from '@/components/create-user-fields';
 import { StateMessage } from '@/components/data-state';
 import type { DirectoryUser, DirectoryUserPage } from '@/lib/api';
 import { DIRECTORY_MAX_OFFSET, DIRECTORY_PAGE_SIZE } from '@/lib/user-directory.mjs';
@@ -42,6 +43,7 @@ export function DirectoryList({ data, error, loading, offset, onPage, onSelect }
       <button className="source-pill" type="button" disabled={loading || atLimit || !data?.has_more} onClick={() => onPage(offset + DIRECTORY_PAGE_SIZE)}>Next</button>
     </nav>}
     {atLimit && data?.has_more && <p className="state-message" role="status">Refine your search to see more users.</p>}
+    {!loading && !error && data && <DisabledCreateUser />}
   </>;
 }
 

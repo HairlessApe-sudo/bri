@@ -57,6 +57,12 @@ The Node test suite covers the proxy's fixed identity, route allowlist, query al
 
 The Users screen (`/users`) is available in authenticated mode, not synthetic development mode. The browser uses the existing same-origin proxy for `GET /api/bri/v1/users` and `GET /api/bri/v1/users/{uuid}`. The proxy verifies the SSR session token; FastAPI independently enforces the active client Admin session and explicit directory grant. Search by name or UUID and page through results; there are no writes. Directory tests use in-process fixtures rather than provider or deployed API credentials.
 
+## Create User (A11.2): release disabled
+
+After an authorized directory list, the Create User entry explains why provisioning is unavailable and shows disabled display name and email fields. Synthetic mode has no directory access. Neither release mode forwards provisioning requests; there is no feature flag or provider setup screen.
+
+The frontend contract is exercised with an injected transport in local tests only. A manual retry after a missing acknowledgement uses the same UUID and payload while the form remains open. After acknowledgement, status can be checked manually by the returned ID. The screen does not poll, resend invitations, or treat an invitation acknowledgement as account activation.
+
 ## Controlled password recovery (A10): hosted flow unavailable
 
 Both `/auth/recover` and `/auth/update-password` render the same static support notice. Neither page prompts for TOTP or reads provider credentials. They do not request reset mail, collect a password, reserve an operation, sign the user out, or start a BRI session. Normal password sign-in and TOTP remain separate. No public environment setting enables controlled recovery.

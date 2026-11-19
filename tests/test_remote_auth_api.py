@@ -167,6 +167,19 @@ class RemoteAuthenticationApiTests(unittest.TestCase):
         self.assertEqual(result.status_code, 403)
         self.assertEqual(verifier.tokens, [])
 
+    def test_normal_app_disables_provisioning_before_parsing_or_authentication(self) -> None:
+        client, verifier, _ = make_app(principal=self.principal)
+        path = '/v1/users/provisioning'
+        for method, route in [('POST', path), ('GET', f'{path}/{uuid4()}'), ('POST', f'{path}/activate')]:
+            with self.subTest(method=method, route=route):
+                response = client.request(method, route, content=b'{', headers={
+                    'Content-Type': 'application/json', 'Authorization': 'Bearer test-token',
+                })
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json(), {'detail': 'Provisioning stage is disabled'})
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertEqual(verifier.tokens, [])
+
     def test_api_identity_label_matches_hosted_environment(self) -> None:
         client, _, _ = make_app(principal=self.principal)
         response = client.get("/openapi.json")

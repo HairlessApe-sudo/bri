@@ -25,7 +25,7 @@ registerHooks({
   load(url, context, next) {
     if (!/\.tsx?$/.test(url)) return next(url, context);
     const { outputText } = ts.transpileModule(readFileSync(new URL(url), 'utf8'), {
-      compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext },
+      compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
     });
     return { format: 'module', source: outputText, shortCircuit: true };
   },
@@ -78,6 +78,114 @@ test('directory pagination follows has_more, with a way back from an empty later
   const limitHtml = render(DirectoryList, { ...props, offset: 10000, data: { items: [user], has_more: true } });
   assert.match(limitHtml, /<button[^>]+disabled[^>]*>Next/);
   assert.match(limitHtml, /Refine your search/);
+});
+
+test('only a successful directory list shows the disabled Create User entry', () => {
+  const props = { offset: 0, data: { items: [], has_more: false } };
+  const html = render(DirectoryList, props);
+  assert.match(html, /<fieldset disabled[^>]*>/);
+  assert.match(html, /Display name/);
+  assert.match(html, /Email/);
+  assert.match(html, /<button[^>]+type="button"[^>]*>Create user/);
+  assert.match(html, /A safe invitation and account setup flow is not available/);
+  assert.doesNotMatch(html, /<form|type="password"|name="(?:role|tenant_id)"/);
+  for (const state of [{ data: null }, { loading: true }, { error: Object.assign(new Error(), { status: 403 }) }]) {
+    assert.doesNotMatch(render(DirectoryList, { ...props, ...state }), /Create user/);
+  }
+});
+
+test('Create User validates locally and sends only the normalized provisioning contract', async () => {
+  const { CreateUserForm, createProvisioningFlow } = await import('../src/components/create-user-form.tsx');
+  const calls = [];
+  let view;
+  const transport = async (path, init) => {
+    calls.push([path, init.method, JSON.parse(init.body), init.headers]);
+    return Response.json({ id, status: 'pending_setup' });
+  };
+  const html = render(CreateUserForm, { transport });
+  assert.deepEqual([...html.matchAll(/<input[^>]*name="([^"]+)"/g)].map((m) => m[1]), ['display_name', 'email']);
+  assert.match(html, /<button[^>]+type="submit"[^>]*>Create user/);
+  assert.doesNotMatch(html, /Check status|Last confirmed status/);
+  const flow = createProvisioningFlow(transport, (next) => { view = next; });
+  await flow.submit('  ', 'fixture@example.test');
+  assert.match(view.error, /display name/i);
+  await flow.submit('a'.repeat(129), 'fixture@example.test');
+  assert.match(view.error, /display name/i);
+  for (const invalidEmail of ['a@', 'a<bad>@example.test', 'a@tést.invalid']) {
+    await flow.submit('Fixture', invalidEmail);
+    assert.match(view.error, /email/i);
+  }
+  assert.deepEqual(calls, []);
+  await flow.submit('  Fixture Name  ', '  Fixture@example.test  ');
+  assert.equal(calls.length, 1);
+  const requestId = calls[0][2].request_id;
+  assert.match(requestId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+  assert.deepEqual(calls[0], ['/v1/users/provisioning', 'POST', { request_id: requestId, display_name: 'Fixture Name', email: 'Fixture@example.test' }, { 'Content-Type': 'application/json' }]);
+  assert.deepEqual(view.receipt, { id, status: 'pending_setup' });
+  assert.equal(view.error, undefined);
+});
+
+test('an unacknowledged Create User request is retried explicitly with the original body and ID', async () => {
+  const { createProvisioningFlow } = await import('../src/components/create-user-form.tsx');
+  const calls = [];
+  let rejectPost;
+  let view;
+  const flow = createProvisioningFlow((path, init) => {
+    calls.push([path, init.method, init.body]);
+    return calls.length === 1 ? new Promise((_, reject) => { rejectPost = reject; })
+      : Promise.resolve(Response.json({ id, status: 'inviting' }));
+  }, (next) => { view = next; });
+  const first = flow.submit('Fixture', 'fixture@example.test');
+  await flow.submit('Duplicate click', 'other@example.test');
+  await flow.checkStatus();
+  assert.equal(calls.length, 1);
+  rejectPost(new Error('private upstream message'));
+  await first;
+  assert.equal(calls.length, 1);
+  assert.equal(view.receipt, undefined);
+  assert.match(view.error, /Could not confirm the request/);
+  assert.doesNotMatch(view.error, /private upstream message/);
+  await flow.submit('Changed name', 'changed@example.test');
+  assert.deepEqual(calls, [calls[0], calls[0]]);
+  assert.equal(view.receipt.status, 'inviting');
+  await flow.submit('Fixture', 'fixture@example.test');
+  assert.equal(calls.length, 2);
+});
+
+test('manual status checks use the submitted request key and validate the distinct returned user ID', async () => {
+  const { createProvisioningFlow, provisioningStatusCopy } = await import('../src/components/create-user-form.tsx');
+  const statuses = {
+    pending_setup: /not active/, inviting: /not been confirmed/, invitation_sent: /not active/,
+    invitation_retryable: /retryable/, invitation_unresolved: /outcome unknown/, active: /^Active/,
+  };
+  assert.deepEqual(Object.keys(provisioningStatusCopy), Object.keys(statuses));
+  const replies = Object.keys(statuses).map((status) => Response.json({ id, status }));
+  replies.push(
+    Response.json({ id, status: 'ACTIVE' }),
+    Response.json({ id, status: 'active', email: 'hidden@example.test' }),
+    Response.json({ id: '00000000-0000-4000-8000-000000000099', status: 'pending_setup' }),
+    Response.json({ id: `${id}/extra`, status: 'active' }),
+    Response.json({ detail: 'hidden@example.test' }, { status: 403 }),
+  );
+  const calls = [];
+  let view;
+  const flow = createProvisioningFlow(async (path, init) => { calls.push([path, init]); return replies.shift(); }, (next) => { view = next; });
+  await flow.submit('Fixture', 'fixture@example.test');
+  assert.equal(calls.length, 1); // No automatic GET.
+  for (const [status, wording] of Object.entries(statuses)) {
+    assert.equal(view.receipt.status, status);
+    assert.match(provisioningStatusCopy[status], wording);
+    if (status !== 'active') await flow.checkStatus();
+  }
+  while (replies.length) {
+    await flow.checkStatus();
+    assert.deepEqual(view.receipt, { id, status: 'active' });
+    assert.match(view.error, /Could not check the current status/);
+    assert.doesNotMatch(view.error, /hidden@example.test/);
+  }
+  const { request_id: requestKey } = JSON.parse(calls[0][1].body);
+  assert.notEqual(requestKey, id);
+  assert.deepEqual(calls.slice(1), Array.from({ length: 10 }, () => [`/v1/users/provisioning/${requestKey}`, { method: 'GET' }]));
 });
 
 test('directory detail renders the detail response rather than relying on the list record', () => {
