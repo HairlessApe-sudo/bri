@@ -50,6 +50,8 @@ export function createDeactivationFlow(id: string, transport: DeactivationTransp
   if (typeof transport !== 'function') throw new Error('A staged deactivation transport is required');
   const path = `/v1/users/${id}/deactivation`;
   let view: DeactivationView = { phase: 'idle', state: null, reason: '', reviewing: false };
+  // Keep the ordering watermark even when an authorization error hides the state.
+  let latest: AccountState | null = null;
   const listeners = new Set<() => void>();
   const getSnapshot = () => view;
   function subscribe(listener: () => void) {
@@ -77,9 +79,24 @@ export function createDeactivationFlow(id: string, transport: DeactivationTransp
         throw new Error('Deactivation request failed');
       }
       const state: unknown = await response.json();
-      if (!isAccountState(state) || (saving && (state.status !== 'deactivated' || state.version === expectedVersion))) {
+      if (!isAccountState(state) || (saving && state.status !== 'deactivated')) {
         throw new Error('Invalid deactivation response');
       }
+      if (latest) {
+        const sameRevision = state.version === latest.version;
+        // Both tokens are canonical decimal strings; compare digit count first.
+        const older = state.version.length < latest.version.length ||
+          (state.version.length === latest.version.length && state.version < latest.version);
+        if (older || (sameRevision && (saving || state.status !== latest.status))) {
+          throw new Error('Non-advancing deactivation response');
+        }
+        if (sameRevision) {
+          // A GET can confirm the retained snapshot without replacing it.
+          update({ phase: 'ready', state: latest });
+          return;
+        }
+      }
+      latest = state;
       update({ phase: 'ready', state });
     } catch {
       const unavailable = status === 401 || status === 403 || status === 404;

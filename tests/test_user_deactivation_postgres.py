@@ -332,6 +332,27 @@ class UserDeactivationTests(unittest.TestCase):
             with self.assertRaisesRegex(psycopg.errors.InsufficientPrivilege, 'deactivation root topology'), db.transaction():
                 db.execute("INSERT INTO bri.org_nodes VALUES (%s,'another-root','root','Root',NULL)", (self.tenant,))
 
+    def test_retired_deactivation_grant_does_not_freeze_root_topology(self):
+        insert_root = "INSERT INTO bri.org_nodes VALUES (%s,'another-root','root','Root',NULL)"
+        with self.connect('bri_app') as db:
+            self.args(db)
+            with self.assertRaisesRegex(psycopg.errors.InsufficientPrivilege, 'deactivation root topology'), db.transaction():
+                db.execute(insert_root, (self.tenant,))
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_role_assignments SET status='revoked' WHERE tenant_id=%s "
+                       "AND principal_id=%s AND role_id='deactivation'", (self.tenant, self.actor[0]))
+        with self.connect('bri_app') as db:
+            self.args(db)
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                db.execute(insert_root, (self.foreign_tenant,))
+            db.execute(insert_root, (self.tenant,))
+            with self.assertRaises(psycopg.errors.ForeignKeyViolation), db.transaction():
+                db.execute("DELETE FROM bri.org_nodes WHERE tenant_id=%s AND node_id='root'", (self.tenant,))
+        with self.connect('postgres') as db:
+            self.assertEqual(db.execute("SELECT scope_node_id,status FROM bri.auth_role_assignments "
+                                        "WHERE tenant_id=%s AND principal_id=%s AND role_id='deactivation'",
+                                        (self.tenant, self.actor[0])).fetchall(), [('root', 'revoked')])
+
     def test_terminal_rows_reject_restoration_and_alternate_starts(self):
         self.seed_grants()
         with self.connect('bri_app') as db:

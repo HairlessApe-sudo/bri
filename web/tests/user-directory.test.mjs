@@ -630,6 +630,35 @@ test('deactivation conflicts require explicit reload, a new reason and a new rev
   assert.deepEqual(JSON.parse(calls[3].body), { expected_version: fresh.version, reason: 'policy_violation' });
 });
 
+test('deactivation reloads never replace a newer revision, even after access is briefly denied', async () => {
+  const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
+  const older = { ...activeDeactivation, version: '9007199254740992' };
+  const conflicting = { ...activeDeactivation, status: 'suspended' };
+  const replies = [activeDeactivation, older, conflicting, activeDeactivation, null, older, deactivated];
+  const flow = createDeactivationFlow(id, async () => {
+    const reply = replies.shift();
+    return reply ? Response.json(reply) : new Response(null, { status: 403 });
+  });
+  await flow.reload();
+  for (const _ of [older, conflicting]) {
+    await flow.reload();
+    assert.equal(flow.getSnapshot().phase, 'refresh-required');
+    assert.deepEqual(flow.getSnapshot().state, activeDeactivation);
+  }
+  const previous = flow.getSnapshot().state;
+  await flow.reload();
+  assert.equal(flow.getSnapshot().phase, 'ready');
+  assert.equal(flow.getSnapshot().state, previous);
+  await flow.reload();
+  assert.equal(flow.getSnapshot().state, null);
+  await flow.reload();
+  assert.equal(flow.getSnapshot().phase, 'refresh-required');
+  assert.equal(flow.getSnapshot().state, null);
+  await flow.reload();
+  assert.equal(flow.getSnapshot().phase, 'ready');
+  assert.deepEqual(flow.getSnapshot().state, deactivated);
+});
+
 test('deactivation rejects malformed decimal versions on read', async () => {
   const { createDeactivationFlow } = await import('../src/lib/user-deactivation.ts');
   for (const version of [1, '', '-1', '01', '1.0', '1e0', '1\n', '１', '9223372036854775808']) {
@@ -651,6 +680,7 @@ test('deactivation failures never publish success or expose transport error text
     [() => new Response('private'), /could not confirm/i, false],
     [() => { throw new Error('private'); }, /could not confirm/i, false],
     [() => Response.json({ ...deactivated, version: activeDeactivation.version }), /could not confirm/i, false],
+    [() => Response.json({ ...deactivated, version: '9007199254740992' }), /could not confirm/i, false],
     [() => Response.json({ ...deactivated, status: 'suspended' }), /could not confirm/i, false],
     [() => Response.json({ ...deactivated, version: '1e3' }), /could not confirm/i, false],
     [() => Response.json({ ...deactivated, extra: 'private' }), /could not confirm/i, false],
