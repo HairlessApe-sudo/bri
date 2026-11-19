@@ -25,7 +25,7 @@ Proposed implementation details, not separate product approvals:
 - Keep provider administrative credentials, database credentials and token-verification configuration server-side. The browser must not supply tenant selection or permissions.
 - Use a secure, one-time, expiring credential setup/recovery mechanism provided by the identity provider; never expose an existing password or store a plaintext password in BRI tables. Revoke or review sessions after sensitive recovery.
 
-Open for later decision/review: exact browser-to-Next session/cookie mechanics, sensitive-action reauthentication windows, credential recovery proofing procedure, audit retention, client-specific admin caps, provider/region selection for hosting, production identity configuration, and production deployment topology. These open items must not be silently treated as approved.
+A10 policy update (2026-11-18): [the approved A10/A11 specification](../planning/assignments-10-11.md) sets a 15-minute provider-verified TOTP window for sensitive actions, a 24-hour dual-control request lifetime, two eligible client Admins per operational client, and a configurable proposed audit retention of 365 days without deletion. These are development requirements, not evidence of deployment. Open for review: recovery identity proofing and trusted delivery of provider evidence, final legal/privacy retention, browser session/cookie operation, client-specific admin caps, provider/region, production identity configuration and deployment topology.
 
 ## 2. Trust and authorization flow
 

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { type FormEvent, useEffect, useState } from 'react';
-import { completeBriAuth } from '@/lib/auth-flow.mjs';
+import { completeBriAuth, verifyTotpChallenge } from '@/lib/auth-flow.mjs';
 import { createSupabaseBrowserClient } from '@/lib/supabase/browser';
 
 function messageFromApi(status: number) {
@@ -109,20 +109,11 @@ export function TotpChallengeForm() {
     setError('');
     try {
       const supabase = createSupabaseBrowserClient();
-      const { data: factors, error: factorError } = await supabase.auth.mfa.listFactors();
-      if (factorError) throw factorError;
-      const factor = factors?.totp?.find((item) => item.status === 'verified');
-      if (!factor) {
-        router.replace('/auth/mfa/enroll');
-        return;
-      }
-      const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({ factorId: factor.id });
-      if (challengeError || !challenge) throw new Error('Authenticator challenge could not be started.');
-      const { error: verifyError } = await supabase.auth.mfa.verify({ factorId: factor.id, challengeId: challenge.id, code: code.trim() });
-      if (verifyError) throw new Error('That code was not accepted. Check the code and try again.');
-      await routeAfterAuth(router);
+      const destination = await verifyTotpChallenge(supabase.auth.mfa, code);
+      if (destination) router.replace(destination);
+      else await routeAfterAuth(router);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Multi-factor verification could not be completed.');
+      setError(caught instanceof Error ? caught.message : 'Verification did not complete. Check the code or contact BRI support.');
       setBusy(false);
     }
   }
@@ -204,70 +195,4 @@ export function TotpEnrollmentForm() {
     </>}
     <p className="auth-help">BRI will not allow protected access until this TOTP factor is verified. For lost-device recovery, contact authorized BRI support.</p>
   </>;
-}
-
-export function RecoveryRequestForm({ callbackUrl }: { callbackUrl: string }) {
-  const [email, setEmail] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setError('');
-    setNotice('');
-    try {
-      const { error: requestError } = await createSupabaseBrowserClient().auth.resetPasswordForEmail(email.trim(), { redirectTo: callbackUrl });
-      if (requestError) throw requestError;
-      setNotice('If an account is eligible, password-reset instructions will be sent to its email address.');
-      setEmail('');
-    } catch {
-      setNotice('If an account is eligible, password-reset instructions will be sent to its email address.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return <>
-    <form className="auth-form" onSubmit={submit}>
-      <label>Account email<input type="email" name="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-      <FormFeedback error={error} notice={notice} />
-      <button className="auth-submit" type="submit" disabled={busy}>{busy ? 'Requesting…' : 'Send recovery instructions'}</button>
-    </form>
-    <p className="auth-help">Password recovery does not bypass required TOTP verification. Lost-authenticator recovery remains with authorized BRI support.</p>
-  </>;
-}
-
-export function UpdatePasswordForm() {
-  const router = useRouter();
-  const [password, setPassword] = useState('');
-  const [confirmation, setConfirmation] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (password !== confirmation) {
-      setError('The passwords do not match.');
-      return;
-    }
-    setBusy(true);
-    setError('');
-    try {
-      const { error: updateError } = await createSupabaseBrowserClient().auth.updateUser({ password });
-      if (updateError) throw new Error('Password update could not be completed. Use a valid recovery link or request a new one.');
-      await routeAfterAuth(router);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Password update could not be completed.');
-      setBusy(false);
-    }
-  }
-
-  return <form className="auth-form" onSubmit={submit}>
-    <label>New password<input type="password" name="new-password" autoComplete="new-password" minLength={12} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-    <label>Confirm new password<input type="password" name="confirm-password" autoComplete="new-password" minLength={12} required value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>
-    <FormFeedback error={error} notice="" />
-    <button className="auth-submit" type="submit" disabled={busy}>{busy ? 'Updating…' : 'Update password'}</button>
-  </form>;
 }

@@ -1,0 +1,17 @@
+# Verify the current worktree on disposable PostgreSQL 16
+
+From the repository root, with the project Python dependencies already installed and `postgres:16` **already cached** on the local Docker Engine:
+
+```sh
+.venv/bin/python -IB scripts/db/verify_disposable.py --pg-bin /absolute/path/to/trusted/postgresql-16/bin
+```
+
+The optional `--pg-bin` is a directory of executables, **not** a cluster directory or service endpoint. Run as a non-root user. Without it the verifier looks in `/usr/lib/postgresql/16/bin`; if those binaries are absent, the native-cluster suites report their skips and other suites still run. Do not supply credentials, an existing cluster, a Docker TCP/SSH host or a service file. The verifier does not pull images. It targets the standard local Unix Docker socket (Linux/WSL) or the Windows Docker Desktop Linux-engine named pipe (WSL interop). It ignores Docker contexts and uses an empty private Docker config.
+
+The core run creates a uniquely labelled container and network, tmpfs PGDATA, and one random port published on `127.0.0.1` only. It generates credentials in memory, validates the actual binding and new database identity, and invokes `scripts/db/migrate.py` as `bri_migrator`. The project-shaped targets in the runner and API are credential-free test tokens; an exact-match adapter translates them to the generated local connection. No `.env.local` is read. The application and tenant-security tests use `bri_app`; durable fixture setup/teardown uses the synthetic bootstrap role. The verifier applies the first five migrations, inserts one backfill probe, applies the remaining migrations, and checks the exact ledger and checksums on an unapplied-changes-free rerun. Do not edit migrations while the verifier is running.
+
+Every backend test module runs directly from the worktree. Governance retains its own loopback container and the migration prefix specified by that suite. The lifecycle, approval and approval-route, re-enrollment, and provider-event suites retain their own private Unix-socket clusters and migration/role setup. None is pointed at a shared service or silently promoted to superuser. A suite error is reported rather than suppressing the assertion or substituting a fake. The verifier prints per-module counts, skip reasons, credential-free failure locations and cleanup IDs. A subtest or teardown can add an error without adding a test method; `passed` counts successful methods. Exit 0 = passed without skips, 1 = errors/failures or preflight failure, 2 = partial coverage (skips) or invalid CLI arguments. Normal completion and exception handling remove only resources created by that invocation; abrupt process/machine termination can interrupt cleanup. Do not use a broad Docker prune.
+
+For just the tenant RLS and durable repository suites use `.venv/bin/python -IB scripts/db/verify_disposable.py --fixture-suites`. Only the verifier prepares the role-permission fixtures in a local clone, as `bri_app` at READ COMMITTED; the actual tenant RLS tests still use SERIALIZABLE and roll back. Durable repository tests each get a separate clone of the migrated database. Teardown drops only that clone, leaving application audit rows and their referenced principals untouched during the test. The suite no longer accepts ambient durable test DSNs.
+
+Offline guard checks: `.venv/bin/python -IB scripts/db/disposable/test_verify.py`. Frontend tests are separate: `(cd web && node --test tests/*.test.mjs)`. A local run does not verify hosted Supabase settings or authorize migration of any shared target.

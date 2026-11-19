@@ -18,6 +18,12 @@ export function AuthFrame({ eyebrow, title, description, children }: {
   </main>;
 }
 
+export function RecoveryUnavailablePage() {
+  return <AuthFrame eyebrow="ACCOUNT RECOVERY" title="Password recovery is unavailable" description="Contact authorized BRI support for help with your account.">
+    <Link href="/login">Return to sign in</Link>
+  </AuthFrame>;
+}
+
 export function AuthUnavailable({ children, message = 'This workspace is running with its isolated synthetic development identity.' }: { children?: React.ReactNode; message?: string }) {
   return <div className="auth-unavailable" role="status">
     <strong>Secure sign-in is not enabled here.</strong>

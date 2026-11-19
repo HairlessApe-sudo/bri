@@ -10,7 +10,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
     ? 'You are signed out. The BRI session revocation could not be confirmed; it will expire automatically.'
     : reason === 'recovery-link-invalid'
       ? 'That recovery link is invalid or expired. Request a new one.'
-      : '';
+      : reason === 'password-updated'
+        ? 'Your password was updated. Sign in with your new password and verify your authenticator.'
+        : '';
 
   return <AuthFrame eyebrow="SECURE ACCESS" title="Sign in to BRI" description="Use your provisioned account. A verified TOTP authenticator is required before workspace access.">
     {enabled ? <LoginForm notice={notice} /> : <AuthUnavailable message={process.env.BRI_UI_AUTH_MODE === 'synthetic' ? 'Hosted sign-in is disabled in the isolated synthetic development mode.' : 'Required Supabase authentication configuration is unavailable.'}>{process.env.BRI_UI_AUTH_MODE === 'synthetic' && <Link href="/">Open the local synthetic workspace</Link>}</AuthUnavailable>}

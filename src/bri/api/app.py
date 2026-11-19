@@ -26,18 +26,23 @@ from bri.api.catalog import (
     load_catalog,
 )
 from bri.api.authentication import (
+    MfaRejected,
     AuthenticationRejected,
     AuthenticationUnavailable,
     AuthenticatedIdentity,
     SupabaseTokenVerifier,
+    has_recent_mfa,
 )
 from bri.api.configuration import (
     ConfigurationServicesFactory,
+    build_postgres_configuration_services,
     TrustedRequestContext,
     build_trusted_request_context,
     create_configuration_router,
 )
-from bri.api.database import Database, DatabaseUnavailable, TenantSession
+from bri.api.approval_routes import create_approval_router
+from bri.api.boundary_audit import audit_denial, mark
+from bri.api.database import Database, DatabaseUnavailable, ProtectedAccessDenied, TenantSession
 from bri.knowledge.query import EvidenceCitation, KnowledgeItem, answer_question
 
 
@@ -85,7 +90,29 @@ class ApiSettings:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryOperation:
+    issuer: str
+    auth_user_id: str
+    session_id: str
+    operation_id: str
+
+
+class RecoveryBinding(Protocol):
+    """Private integration seam; there is deliberately no runtime implementation.
+
+    Before allowing self-service, an authenticated provider event source and a
+    trusted way to bind its eventual password-change event to this exact
+    operation must exist. Pinning must not itself mutate provider credentials.
+    A browser callback or matching user/timestamp is not a binding.
+    """
+    def pin(self, operation: RecoveryOperation) -> RecoveryOperation: ...
+
+
 class DatabaseProtocol(Protocol):
+    def record_boundary_denial(self, action: str, phase: str, outcome: str, correlation: str,
+                               verified_user: str | None, verified_issuer: str | None) -> None: ...
+
     def healthcheck(self) -> None: ...
 
     def resolve_authenticated_principal(
@@ -97,15 +124,22 @@ class DatabaseProtocol(Protocol):
 
     def auth_session_is_active(self, auth_user_id: str, session_id: str) -> bool: ...
 
+    def protected_tenant_context(self, tenant_id: str, *, auth_user_id: str, session_id: str,
+                                 principal_id: str, issuer: str) -> ContextManager[TenantSession]: ...
+
+    def invalidate_for_password_recovery(self, auth_user_id: str, session_id: str, *, correlation_id: str,
+                                         recovery_authenticated_at: int | None) -> bool: ...
+
     def start_auth_session(
         self,
         auth_user_id: str,
         issuer: str,
         subject: str,
         session_id: str,
+        *, correlation_id: str, primary_authenticated_at: int | None,
     ) -> datetime | None: ...
 
-    def revoke_auth_session(self, auth_user_id: str, session_id: str) -> bool: ...
+    def revoke_auth_session(self, auth_user_id: str, session_id: str, *, correlation_id: str) -> bool: ...
 
     def tenant_context(self, tenant_id: str) -> ContextManager[TenantSession]: ...
 
@@ -119,6 +153,26 @@ class DatabaseProtocol(Protocol):
         synthetic_principal_id: str | None,
         read_only: bool,
     ) -> ContextManager[TenantSession]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _HostedConfigurationScope:
+    """Bind each repository transaction to the session in the verified request."""
+    database: DatabaseProtocol
+    context: TrustedRequestContext
+    issuer: str
+
+    def configuration_context(self, tenant_id: str, *, auth_user_id: str | None,
+                              synthetic_principal_id: str | None, read_only: bool) -> ContextManager[TenantSession]:
+        ctx = self.context
+        if (not read_only or synthetic_principal_id is not None or ctx.identity_source != "supabase"
+                or tenant_id != ctx.tenant_id or not auth_user_id or auth_user_id != ctx.auth_user_id
+                or not ctx.session_id):
+            raise ProtectedAccessDenied("invalid configuration scope")
+        return self.database.protected_tenant_context(
+            tenant_id, auth_user_id=auth_user_id, session_id=ctx.session_id,
+            principal_id=ctx.principal.subject_id, issuer=self.issuer,
+        )
 
 
 class OrganizationNodeResponse(BaseModel):
@@ -445,8 +499,13 @@ def create_app(
     catalog: SyntheticCatalog | None = None,
     token_verifier: Any | None = None,
     configuration_services_factory: ConfigurationServicesFactory | None = None,
+    recovery_binding: RecoveryBinding | None = None,
 ) -> FastAPI:
     active_settings = settings or ApiSettings.from_environment()
+    if recovery_binding is not None and (
+        active_settings.auth_mode != "supabase" or database is None or token_verifier is None
+    ):
+        raise ValueError("Recovery binding requires explicitly isolated database and verifier")
     active_database = database or Database(
         supabase_url=active_settings.supabase_url,
         database_url=active_settings.database_url,
@@ -494,6 +553,7 @@ def create_app(
     async def safe_request_observability(request: Request, call_next):
         request_id = str(uuid4())
         request.state.request_id = request_id
+        log_method = request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER"
         started = time.perf_counter()
         try:
             response = await call_next(request)
@@ -502,17 +562,21 @@ def create_app(
             _REQUEST_LOG.error(
                 "request_failed request_id=%s method=%s error_type=%s duration_ms=%.1f",
                 request_id,
-                request.method,
+                log_method,
                 type(exc).__name__,
                 elapsed_ms,
             )
-            raise
+            if active_settings.auth_mode != "supabase" or not getattr(request.state, "audit_action", None):
+                raise
+            response = JSONResponse({"detail": "Security service unavailable"}, status_code=503)
+        if active_settings.auth_mode == "supabase":
+            response = await audit_denial(request, response, active_database)
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers["X-Request-ID"] = request_id
         _REQUEST_LOG.info(
             "request_completed request_id=%s method=%s status=%s duration_ms=%.1f",
             request_id,
-            request.method,
+            log_method,
             response.status_code,
             elapsed_ms,
         )
@@ -530,6 +594,7 @@ def create_app(
         authorization: str | None,
         x_dev_identity: str | None,
     ) -> AuthenticatedIdentity:
+        request.state.audit_phase = "authentication"
         if active_settings.auth_mode != "supabase":
             raise HTTPException(status_code=404, detail="Remote authentication is not enabled")
         if x_dev_identity is not None:
@@ -545,11 +610,15 @@ def create_app(
             raise HTTPException(status_code=503, detail="Authentication is not configured")
         try:
             identity: AuthenticatedIdentity = await active_token_verifier.verify(access_token)
+        except MfaRejected as exc:
+            request.state.audit_phase = "mfa"
+            raise HTTPException(status_code=401, detail="Authentication was rejected") from exc
         except AuthenticationRejected as exc:
             raise HTTPException(status_code=401, detail="Authentication was rejected") from exc
         except AuthenticationUnavailable as exc:
             raise HTTPException(status_code=503, detail="Authentication service is unavailable") from exc
         request.state.authenticated_identity = identity
+        request.state.audit_phase = "membership"
         return identity
 
     async def current_principal(
@@ -561,6 +630,7 @@ def create_app(
         ),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> Principal:
+        mark(request, "authenticate", "input")
         if "x-tenant-id" in request.headers or "x-bri-tenant-context" in request.headers or "tenant_id" in request.query_params:
             raise HTTPException(status_code=400, detail="Tenant selection is server-controlled")
         if request.method in {"GET", "HEAD"} and await request.body():
@@ -588,9 +658,16 @@ def create_app(
         )
         if principal is None:
             raise HTTPException(status_code=403, detail="No active BRI identity mapping exists")
+        request.state.audit_phase = "session"
         if not active_database.auth_session_is_active(identity.auth_user_id, identity.session_id):
             raise HTTPException(status_code=401, detail="BRI session is inactive or expired")
+        request.state.audit_action = None  # Later resource errors are not authentication failures.
         return principal
+
+    @app.exception_handler(ProtectedAccessDenied)
+    async def protected_access_denied(request: Request, exc: ProtectedAccessDenied) -> JSONResponse:
+        mark(request, "authenticate", "authority")
+        return JSONResponse(status_code=403, content={"detail": "Client access is not authorized"})
 
     def tenant_session(
         request: Request,
@@ -602,11 +679,16 @@ def create_app(
                 detail="A server-resolved tenant context is required for this identity",
             )
         tenant_id = next(iter(principal.tenant_ids))
-        try:
-            with request.app.state.database.tenant_context(tenant_id) as session:
-                yield session
-        except DatabaseUnavailable:
-            raise
+        if active_settings.auth_mode == "supabase":
+            identity: AuthenticatedIdentity = request.state.authenticated_identity
+            scope = active_database.protected_tenant_context(
+                tenant_id, auth_user_id=identity.auth_user_id, session_id=identity.session_id,
+                principal_id=principal.subject_id, issuer=identity.issuer,
+            )
+        else:
+            scope = active_database.tenant_context(tenant_id)
+        with scope as session:
+            yield session
 
     def tenant_write_session(
         request: Request,
@@ -633,6 +715,7 @@ def create_app(
         authorization: str | None = Header(default=None, alias="Authorization"),
         x_dev_identity: str | None = Header(default=None, alias="X-Dev-Identity"),
     ) -> dict[str, str]:
+        mark(request, "session_start", "input")
         if await request.body():
             raise HTTPException(status_code=400, detail="Session requests do not accept a body")
         identity = await verify_remote_identity(request, authorization, x_dev_identity)
@@ -643,15 +726,57 @@ def create_app(
         )
         if principal is None:
             raise HTTPException(status_code=403, detail="No active BRI identity mapping exists")
+        request.state.audit_phase = "session"
         expires_at = active_database.start_auth_session(
             identity.auth_user_id,
             identity.issuer,
             identity.auth_user_id,
             identity.session_id,
+            correlation_id=request.state.request_id,
+            primary_authenticated_at=identity.primary_authenticated_at,
         )
         if expires_at is None:
             raise HTTPException(status_code=403, detail="BRI session cannot be started for this identity")
         return {"status": "active", "expires_at": expires_at.isoformat()}
+
+    @app.post("/v1/auth/recovery/invalidate", status_code=204, tags=["identity"],
+              summary="Invalidate the verified caller's BRI sessions before password recovery")
+    async def invalidate_for_recovery(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+        x_dev_identity: str | None = Header(default=None, alias="X-Dev-Identity"),
+    ) -> Response:
+        mark(request, "recovery", "input")
+        if request.query_params or await request.body():
+            raise HTTPException(status_code=400, detail="Recovery does not accept target or session parameters")
+        if active_settings.auth_mode == "synthetic":
+            raise HTTPException(status_code=503, detail="Password recovery is unavailable")
+        identity = await verify_remote_identity(request, authorization, x_dev_identity)
+        request.state.audit_phase = "mfa"
+        if not has_recent_mfa(identity):
+            raise HTTPException(status_code=403, detail="A recent verified TOTP challenge is required")
+        request.state.audit_phase = "membership"
+        principal = active_database.resolve_authenticated_principal(
+            identity.auth_user_id, identity.issuer, identity.auth_user_id,
+        )
+        if principal is None or not principal.tenant_ids:
+            raise HTTPException(status_code=403, detail="Recovery is unavailable for this identity")
+        request.state.audit_phase = "operation"
+        if recovery_binding is None:
+            raise HTTPException(status_code=503, detail="Password recovery is unavailable")
+        operation = RecoveryOperation(identity.issuer, identity.auth_user_id, identity.session_id, request.state.request_id)
+        try:
+            bound = recovery_binding.pin(operation)
+        except Exception:  # noqa: BLE001 -- Any binding failure must deny recovery without exposing details.
+            raise HTTPException(status_code=503, detail="Password recovery is unavailable") from None
+        if type(bound) is not RecoveryOperation or bound != operation:
+            raise HTTPException(status_code=503, detail="Password recovery is unavailable")
+        if not active_database.invalidate_for_password_recovery(
+            identity.auth_user_id, identity.session_id, correlation_id=request.state.request_id,
+            recovery_authenticated_at=identity.recovery_authenticated_at,
+        ):
+            raise HTTPException(status_code=403, detail="Recovery session cannot be used")
+        return Response(status_code=204)
 
     @app.delete("/v1/auth/session", status_code=204, tags=["identity"], summary="Revoke the current BRI session")
     async def end_auth_session(
@@ -659,6 +784,7 @@ def create_app(
         authorization: str | None = Header(default=None, alias="Authorization"),
         x_dev_identity: str | None = Header(default=None, alias="X-Dev-Identity"),
     ) -> Response:
+        mark(request, "session_end", "input")
         if await request.body():
             raise HTTPException(status_code=400, detail="Session requests do not accept a body")
         identity = await verify_remote_identity(request, authorization, x_dev_identity)
@@ -669,7 +795,9 @@ def create_app(
         )
         if principal is None:
             raise HTTPException(status_code=403, detail="No active BRI identity mapping exists")
-        active_database.revoke_auth_session(identity.auth_user_id, identity.session_id)
+        request.state.audit_phase = "session"
+        if not active_database.revoke_auth_session(identity.auth_user_id, identity.session_id, correlation_id=request.state.request_id):
+            raise HTTPException(status_code=403, detail="Session revocation was not confirmed")
         return Response(status_code=204)
 
     @app.get("/v1/me/tenants", tags=["identity"], summary="List the caller's explicitly active BRI tenant memberships")
@@ -1044,6 +1172,21 @@ def create_app(
         except ValueError:
             raise HTTPException(status_code=403, detail="Trusted configuration context is unavailable") from None
 
+    if active_settings.auth_mode == "supabase":
+        if configuration_services_factory is not None:
+            raise ValueError("Hosted configuration requires the session-bound database repository")
+
+        def hosted_services(context: TrustedRequestContext, write: bool):
+            if write:
+                raise ProtectedAccessDenied("hosted configuration is read-only")
+            scope = _HostedConfigurationScope(
+                active_database, context, f"{active_settings.supabase_url.rstrip('/')}/auth/v1",
+            )
+            return build_postgres_configuration_services(scope, context, read_only=True)
+
+        configuration_services_factory = hosted_services
+
+    app.include_router(create_approval_router(principal_dependency=current_principal))
     app.include_router(create_configuration_router(
         context_dependency=trusted_configuration_context,
         database=active_database,

@@ -57,6 +57,31 @@ def _project_ref(value: str) -> str | None:
     return match.group(1) if match else None
 
 
+def ensure_role_catalog(tenant, ensure):
+    """Use identical tenant, role and permission fixtures in both transactions."""
+    tenant_id = tenant["tenant_id"]
+    ensure(
+        "bri.tenants",
+        ("tenant_id", "display_name", "sector"),
+        (tenant_id, tenant["display_name"], tenant["sector"]),
+        ("tenant_id",),
+    )
+    for role in tenant["roles"]:
+        ensure(
+            "bri.app_roles",
+            ("tenant_id", "role_id", "display_name"),
+            (tenant_id, role["role_id"], role["display_name"]),
+            ("tenant_id", "role_id"),
+        )
+        for permission in role["permissions"]:
+            ensure(
+                "bri.role_permissions",
+                ("tenant_id", "role_id", "permission"),
+                (tenant_id, role["role_id"], permission),
+                ("tenant_id", "role_id", "permission"),
+            )
+
+
 @unittest.skipUnless(os.environ.get("BRI_RUN_DB_TESTS") == "1", "set BRI_RUN_DB_TESTS=1 to opt in to the verified development database")
 class TenantRlsIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -103,12 +128,7 @@ class TenantRlsIntegrationTests(unittest.TestCase):
         for tenant in FIXTURE["tenants"]:
             tenant_id = tenant["tenant_id"]
             self._tenant_context(tenant_id)
-            ensure(
-                "bri.tenants",
-                ("tenant_id", "display_name", "sector"),
-                (tenant_id, tenant["display_name"], tenant["sector"]),
-                ("tenant_id",),
-            )
+            ensure_role_catalog(tenant, ensure)
             for node in tenant["org_nodes"]:
                 ensure(
                     "bri.org_nodes",
@@ -116,20 +136,6 @@ class TenantRlsIntegrationTests(unittest.TestCase):
                     (tenant_id, node["node_id"], node["node_type"], node["display_name"], node["parent_id"]),
                     ("tenant_id", "node_id"),
                 )
-            for role in tenant["roles"]:
-                ensure(
-                    "bri.app_roles",
-                    ("tenant_id", "role_id", "display_name"),
-                    (tenant_id, role["role_id"], role["display_name"]),
-                    ("tenant_id", "role_id"),
-                )
-                for permission in role["permissions"]:
-                    ensure(
-                        "bri.role_permissions",
-                        ("tenant_id", "role_id", "permission"),
-                        (tenant_id, role["role_id"], permission),
-                        ("tenant_id", "role_id", "permission"),
-                    )
             for user in tenant["users"]:
                 ensure(
                     "bri.synthetic_principals",
@@ -173,6 +179,17 @@ class TenantRlsIntegrationTests(unittest.TestCase):
                     "INSERT INTO bri.tenants (tenant_id, display_name, sector) VALUES (%s, %s, %s)",
                     (f"tenant-synth-denied-write", second["display_name"], second["sector"]),
                 )
+
+    def test_serializable_role_definition_change_fails_closed(self) -> None:
+        tenant = FIXTURE["tenants"][0]
+        self._tenant_context(tenant["tenant_id"])
+        with self.assertRaises(psycopg.errors.RaiseException) as rejected, self.conn.transaction():
+            self.conn.execute(
+                "INSERT INTO bri.role_permissions(tenant_id, role_id, permission) VALUES (%s,%s,%s)",
+                (tenant["tenant_id"], tenant["roles"][0]["role_id"], "synthetic:isolation_probe"),
+            )
+        self.assertEqual(rejected.exception.sqlstate, "P0001")
+        self.assertEqual(rejected.exception.diag.message_primary, "role changes require read committed isolation")
 
     def test_missing_tenant_context_denies_reads_and_writes(self) -> None:
         self.assertEqual(self.conn.execute("SELECT count(*) FROM bri.tenants").fetchone()[0], 0)
@@ -467,9 +484,26 @@ class TenantRlsIntegrationTests(unittest.TestCase):
             "knowledge_proposals",
             "validation_decisions",
             "validated_knowledge",
+            # 0006: identities, memberships, sessions and audit.
+            "auth_principals", "auth_identity_links", "auth_tenant_memberships",
+            "auth_role_assignments", "platform_superadmins", "tenant_admin_policies",
+            "auth_sessions", "security_audit_events",
+            # 0007: durable configuration.
+            "prompt_versions", "prompt_lifecycle_events", "prompt_active_versions",
+            "signature_package_versions", "signature_package_activation",
+            "tenant_signature_revisions", "shield_config_revisions", "configuration_audit_events",
+            # 0008–0011: security lifecycle, governance, approvals and provider events.
+            "security_retention_policy", "session_guards", "credential_operations",
+            "credential_event_receipts", "client_activation", "client_totp_observations",
+            "client_governance_fence", "approval_admin_people", "privileged_approvals",
+            "approval_votes", "approval_events", "approval_dispatches",
+            "provider_event_source", "provider_event_receipts",
         }
-        self.assertEqual({row[0] for row in rows}, expected_tables)
-        self.assertEqual(len(rows), len(expected_tables))
+        from scripts.db.disposable.catalog import declared_tables
+        declared = declared_tables(sorted((ROOT / 'db/migrations').glob('*.sql')))
+        self.assertTrue(expected_tables <= declared, 'historical table missing from migrations')
+        self.assertEqual({row[0] for row in rows}, declared)
+        self.assertEqual(len(rows), len(declared))
         for _, enabled, forced, owner in rows:
             self.assertTrue(enabled)
             self.assertTrue(forced)

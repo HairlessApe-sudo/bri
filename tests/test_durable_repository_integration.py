@@ -1,11 +1,10 @@
 """Opt-in integration tests for the durable configuration repositories.
 
-Set BRI_DURABLE_TEST_ADMIN_DSN and BRI_DURABLE_TEST_APP_DSN only for a fresh,
-loopback disposable PostgreSQL database migrated through scripts/db/migrate.py.
+Run via scripts/db/verify_disposable.py. Each test receives a fresh migrated
+database on the verifier-owned engine. Never accept ambient database URLs.
 """
 from __future__ import annotations
 
-import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -26,13 +25,13 @@ from bri.privacy.regional import (
 from bri.prompts.management import PromptLayer, PromptManager, PromptVersion, PromptVersionConflict
 from bri.prompts.postgres import PostgresPromptRepository
 
-ADMIN_DSN = os.environ.get("BRI_DURABLE_TEST_ADMIN_DSN")
-APP_DSN = os.environ.get("BRI_DURABLE_TEST_APP_DSN")
-
-
-@unittest.skipUnless(ADMIN_DSN and APP_DSN, "requires explicitly configured disposable PostgreSQL")
 class DurableRepositoryIntegrationTests(unittest.TestCase):
+    fresh_database = None  # In-process capability supplied only by the disposable verifier.
+
     def setUp(self):
+        if self.fresh_database is None:
+            self.skipTest("requires a verifier-owned per-test database")
+        self.connect = self.enterContext(self.fresh_database())
         self.tenant_a = "durable-a-" + uuid4().hex[:12]
         self.tenant_b = "durable-b-" + uuid4().hex[:12]
         self.platform_principal_id = str(uuid4())
@@ -42,7 +41,7 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
         self.role_id = "a08-admin-" + uuid4().hex[:8]
         self.scope_id = "a08-scope-" + uuid4().hex[:8]
         self.package_id = "a08-package-" + uuid4().hex[:8]
-        with psycopg.connect(ADMIN_DSN) as conn:
+        with self.connect("postgres") as conn:
             for tenant in (self.tenant_a, self.tenant_b):
                 conn.execute("INSERT INTO bri.tenants(tenant_id,display_name,sector) VALUES (%s,%s,'test')", (tenant, "Synthetic fixture"))
             conn.execute("INSERT INTO bri.auth_principals(principal_id,status) VALUES (%s,'active')", (self.platform_principal_id,))
@@ -57,30 +56,12 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
                 conn.execute("INSERT INTO bri.role_permissions(tenant_id,role_id,permission) VALUES (%s,%s,%s)", (self.tenant_a,self.role_id,permission))
             conn.execute("INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id,status) VALUES (%s,%s,%s,%s,'active')", (self.tenant_a,self.tenant_principal_id,self.role_id,self.scope_id))
 
-    def tearDown(self):
-        with psycopg.connect(ADMIN_DSN) as conn:
-            conn.execute("DELETE FROM bri.signature_package_activation WHERE package_id=%s", (self.package_id,))
-            conn.execute("DELETE FROM bri.signature_package_versions WHERE package_id=%s", (self.package_id,))
-            conn.execute("DELETE FROM bri.configuration_audit_events WHERE actor_id=%s", (self.platform_principal_id,))
-            conn.execute("DELETE FROM bri.prompt_active_versions WHERE layer='platform' AND version_id IN (SELECT version_id FROM bri.prompt_versions WHERE tenant_id IS NULL AND author_id=%s)", (self.platform_principal_id,))
-            conn.execute("DELETE FROM bri.prompt_lifecycle_events WHERE tenant_id IS NULL AND actor_id=%s", (self.platform_principal_id,))
-            conn.execute("DELETE FROM bri.prompt_versions WHERE tenant_id IS NULL AND author_id=%s", (self.platform_principal_id,))
-            for table in ("prompt_active_versions", "prompt_lifecycle_events", "prompt_versions", "tenant_signature_revisions", "shield_config_revisions", "configuration_audit_events"):
-                conn.execute(f"DELETE FROM bri.{table} WHERE tenant_id = ANY(%s)", ([self.tenant_a, self.tenant_b],))
-            conn.execute("DELETE FROM bri.auth_role_assignments WHERE tenant_id=%s AND principal_id=%s", (self.tenant_a,self.tenant_principal_id))
-            conn.execute("DELETE FROM bri.auth_tenant_memberships WHERE tenant_id=%s AND principal_id=%s", (self.tenant_a,self.tenant_principal_id))
-            conn.execute("DELETE FROM bri.auth_tenant_memberships WHERE principal_id=%s", (self.platform_principal_id,))
-            conn.execute("DELETE FROM bri.role_permissions WHERE tenant_id=%s AND role_id=%s", (self.tenant_a,self.role_id))
-            conn.execute("DELETE FROM bri.app_roles WHERE tenant_id=%s AND role_id=%s", (self.tenant_a,self.role_id))
-            conn.execute("DELETE FROM bri.org_nodes WHERE tenant_id=%s AND node_id=%s", (self.tenant_a,self.scope_id))
-            conn.execute("DELETE FROM bri.auth_identity_links WHERE auth_user_id IN (%s,%s)", (self.platform_auth_user_id,self.tenant_auth_user_id))
-            conn.execute("DELETE FROM bri.platform_superadmins WHERE principal_id=%s", (self.platform_principal_id,))
-            conn.execute("DELETE FROM bri.auth_principals WHERE principal_id IN (%s,%s)", (self.platform_principal_id,self.tenant_principal_id))
-            conn.execute("DELETE FROM bri.tenants WHERE tenant_id = ANY(%s)", ([self.tenant_a, self.tenant_b],))
+    # No row-level teardown: audit records retain their principal FKs until
+    # the verifier disposes of the entire private test database.
 
     @contextmanager
     def _scope(self, tenant_id: str | None):
-        with psycopg.connect(APP_DSN) as conn:
+        with self.connect("bri_app") as conn:
             auth_user_id = self.platform_auth_user_id if tenant_id is None else self.tenant_auth_user_id
             conn.execute("SELECT set_config('bri.auth_user_id',%s,true)", (auth_user_id,))
             if tenant_id is not None:
@@ -129,7 +110,7 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
         def failing_scope(tenant_id):
             @contextmanager
             def run():
-                conn = psycopg.connect(APP_DSN)
+                conn = self.connect("bri_app")
                 try:
                     conn.execute("SELECT set_config('bri.tenant_id',%s,true)", (tenant_id,))
                     yield conn
@@ -224,16 +205,18 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
             self.assertNotIn("content", audit_columns)
             self.assertNotIn("pattern", audit_columns)
     def test_authenticated_principal_requires_active_platform_superadmin_record(self):
-        with psycopg.connect(ADMIN_DSN) as conn:
+        with self.connect("postgres") as conn:
             conn.execute(
                 "INSERT INTO bri.auth_tenant_memberships(tenant_id,principal_id,membership_type,status) "
                 "VALUES (%s,%s,'platform_superadmin','active')",
                 (self.tenant_a, self.platform_principal_id),
             )
 
+        connect = self.connect
+
         class DisposableDatabase(Database):
             def _connect(self):
-                return psycopg.connect(APP_DSN)
+                return connect("bri_app")
 
         database = DisposableDatabase(
             "https://bwqdyibvuecgthtatrtv.supabase.co",
@@ -249,7 +232,7 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
         self.assertTrue(active.platform_superadmin)
         self.assertEqual(active.tenant_ids, frozenset({self.tenant_a}))
 
-        with psycopg.connect(ADMIN_DSN) as conn:
+        with self.connect("postgres") as conn:
             conn.execute(
                 "UPDATE bri.platform_superadmins SET status='suspended' WHERE principal_id=%s",
                 (self.platform_principal_id,),
@@ -278,9 +261,11 @@ class DurableRepositoryIntegrationTests(unittest.TestCase):
             identity_source="synthetic",
             assurance_level="development-synthetic",
         )
+        connect = self.connect
+
         class DisposableDatabase(Database):
             def _connect(self):
-                return psycopg.connect(APP_DSN)
+                return connect("bri_app")
 
         database = DisposableDatabase(
             "https://bwqdyibvuecgthtatrtv.supabase.co",

@@ -3,7 +3,23 @@
 Last updated: 2026-11-18
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
-## Assignment 10 verification / Assignment 11 intake (2026-11-18)
+## A10 and A11 approved scope (2026-11-18)
+
+The owner supplied [separate A10 and A11 specifications](assignments-10-11.md) after the intake below. A10 covers the secure identity lifecycle, two-person approval, and the two-eligible-client-admin minimum. A11 client administration is gated on a verified A10 milestone commit. Neither approval authorizes hosted administration writes, production auth, shared migrations, live provider configuration, irreversible deletion or deployment.
+
+### A10 local milestone — verified; hosted execution remains blocked
+
+Final integrated run: **347/347 backend tests**, zero failures, errors or skips on disposable PostgreSQL 16. The same run verified all **16 ledger checksums**, zero migrations on replay and forced RLS on **45 non-ledger tables** under the restricted application role. The web suite passed **32/32**, TypeScript and the optimized build passed, and both recovery pages rendered without a credential form. Final Ruff baseline comparison: 156 existing findings, zero additions against `2660e93` (158). No hosted changes. See [A10 verification](a10-verification.md) for acceptance evidence and external limits.
+
+### A10 review history (superseded by the final run above)
+
+The independent review identified six checks required before acceptance: (1) prove supervised enrollment of a distinct replacement factor without undoing an independent suspension; (2) reconcile an already-dispatched removal after voter/session expiry without issuing another delete; (3) bind password recovery to an authenticated provider completion or keep self-service unavailable; (4) serialize logout against first session creation; (5) prevent the application role from removing protected reset permissions; (6) pin the password-write destination to the approved provider project. The frontend build and synthetic provider tests alone do not close these checks. No live-provider or production verification is implied.
+
+Local integration evidence, before final acceptance: the disposable verifier ran 337/337 backend tests (no skips), including 10 tenant RLS and eight durable repository tests. All 14 migration checksums matched; replay applied zero migrations; all 45 non-ledger tables had forced RLS. The verifier removed its disposable databases, container and network. The role-catalog fixture uses READ COMMITTED for setup only; RLS assertions still use `bri_app` under SERIALIZABLE. Per-test database teardown preserves immutable audit records during each test rather than deleting referenced principals. The web suite passed 32/32, TypeScript passed, and the optimized web build succeeded. No hosted verification. Lint cleanup removed the 84 newly introduced findings: comparison with archived `2660e93` found 156 current diagnostics versus 158 at baseline and no additions by file, rule or message. This comparison predates the remaining security fixes below and must be rerun on the final diff. A10 remains uncommitted.
+
+The subsequent acceptance review found three local gaps despite the passing suite: immutable events for denied authentication/recovery/approval activity and approval outcomes; consistent enforcement of the eight-hour ceiling on ordinary protected reads if persisted expiry is overlong; and an approval denial test with two independently operational tenants. The latter is a coverage gap, not an observed leak. A11 remains gated. Both recovery pages now give the same unavailable notice without prompting for an authenticator or promising a password change.
+
+## Earlier Assignment 10 verification / Assignment 11 intake (2026-11-18; before scope approval)
 
 - **A10 acceptance: blocked.** At `07958f6`, Assignment 09 is the last numbered implementation record. No original A10 or A11 specification or acceptance criteria were found in this checkout or its reachable Git history. The authentication/MFA baseline belongs to Assignment 06 (AD-15); the production-hardening stage in `../architecture/authentication-and-identity.md` is not an approved A10 specification. No A10 criterion can be marked passed or failed.
 - **Local regression evidence, not production verification:** Python unittest discovery ran 244 tests: 224 passed, 20 opt-in database tests skipped (shared-development and disposable database connections disabled). The suite exercises token and TOTP checks, BRI session rejection/revocation, tenant and role authorization, and privacy controls. In `web`, `npm test` passed all 19 tests, `npm run typecheck` passed, and `npm run build` succeeded. No live identity-provider flow, database migration, live RLS test, production secret configuration or deployment was verified in this review.

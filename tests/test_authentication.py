@@ -7,13 +7,16 @@ import json
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 
 import httpx
 
 from bri.api.authentication import (
+    AuthenticatedIdentity,
     AuthenticationRejected,
     AuthenticationUnavailable,
     SupabaseTokenVerifier,
+    has_recent_mfa,
 )
 
 
@@ -113,6 +116,86 @@ class SupabaseTokenVerifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0].url.path, "/auth/v1/user")
         self.assertEqual(seen[0].headers["apikey"], PUBLISHABLE_KEY)
         self.assertEqual(seen[0].headers["authorization"], f"Bearer {token}")
+
+    async def test_verified_amr_clocks_are_independent_of_refreshed_iat(self) -> None:
+        now = 1_800_000_000
+        with patch("bri.api.authentication.time.time", return_value=now) as clock:
+            token = make_token(amr=[{"method": "password", "timestamp": now - 3600},
+                                    {"method": "totp", "timestamp": now - 900}])
+            verifier, client, _, _ = self.verifier(token)
+            async with client:
+                identity = await verifier.verify(token)
+            self.assertEqual(identity.primary_authenticated_at, now - 3600)
+            self.assertEqual(identity.totp_authenticated_at, now - 900)
+            self.assertTrue(has_recent_mfa(identity))
+            clock.return_value += 0.01
+            self.assertFalse(has_recent_mfa(identity))
+            legacy = AuthenticatedIdentity(USER_ID, SESSION_ID, ISSUER, "aal2", ("totp",))
+            self.assertIsNone(legacy.recovery_authenticated_at)
+            self.assertIsNone(legacy.primary_authenticated_at)
+            self.assertFalse(has_recent_mfa(legacy))
+            self.assertFalse(has_recent_mfa(None))
+
+    async def test_bad_amr_timestamps_do_not_grant_step_up_or_primary_evidence(self) -> None:
+        now = 1_800_000_000
+        with patch("bri.api.authentication.time.time", return_value=now):
+            for value in (None, True, "1800000000", 0, -1, now + 1, now - 0.5, 10**400):
+                with self.subTest(value=value):
+                    token = make_token(amr=[{"method": method, "timestamp": value}
+                                            for method in ("totp", "password")])
+                    verifier, client, _, _ = self.verifier(token)
+                    async with client:
+                        identity = await verifier.verify(token)
+                    self.assertFalse(has_recent_mfa(identity))
+                    self.assertIsNone(identity.recovery_authenticated_at)
+                    self.assertIsNone(identity.primary_authenticated_at)
+                    self.assertIsNone(identity.totp_authenticated_at)
+
+    async def test_missing_or_ambiguous_evidence_is_not_inferred(self) -> None:
+        now = int(time.time())
+        for totp in ([{"method": "totp"}], [{"method": "totp", "timestamp": ts}
+                                            for ts in (now, now - 901)]):
+            token = make_token(amr=[*totp, {"method": "token_refresh", "timestamp": now}])
+            verifier, client, _, _ = self.verifier(token)
+            async with client:
+                identity = await verifier.verify(token)
+            self.assertIsNone(identity.primary_authenticated_at)
+            self.assertFalse(has_recent_mfa(identity))
+
+    async def test_provider_totp_aliases_normalize_only_after_verification(self):
+        now = int(time.time())
+        for other in ([], [{"method": "totp", "timestamp": now}], ["totp"]):
+            amr = [{"method": "mfa/totp", "timestamp": now}, *other]
+            token = make_token(amr=amr)
+            verifier, client, _, _ = self.verifier(token)
+            async with client:
+                identity = await verifier.verify(token)
+            self.assertEqual(identity.assurance_methods, ("totp",))
+            self.assertEqual(has_recent_mfa(identity), not other)
+        for amr in (["mfa/totp"], ["totp"], [{"method": "mfa/phone", "timestamp": now}],
+                    [{"method": "mfa/recovery_code", "timestamp": now}]):
+            token = make_token(amr=amr)
+            verifier, client, _, _ = self.verifier(token)
+            async with client:
+                with self.assertRaises(AuthenticationRejected):
+                    await verifier.verify(token)
+
+    async def test_recovery_cutoff_requires_one_timestamped_native_primary(self):
+        now = int(time.time())
+        when = now - 3600
+        for primary, expected in ((["recovery"], when), (["password"], when), (["otp"], None),
+                                  (["magiclink"], None), (["password", "otp"], None),
+                                  (["password", "recovery"], None), (["recovery", "recovery"], None),
+                                  ([], None)):
+            with self.subTest(primary=primary):
+                amr = [{"method": name, "timestamp": when} for name in primary]
+                amr += [{"method": "totp", "timestamp": now}, {"method": "token_refresh", "timestamp": now}]
+                token = make_token(amr=amr, iat=now)
+                verifier, client, _, _ = self.verifier(token)
+                async with client:
+                    identity = await verifier.verify(token)
+                self.assertEqual(identity.recovery_authenticated_at, expected)
+                self.assertEqual(identity.primary_authenticated_at, when if primary == ["password"] else None)
 
     async def test_rejects_token_not_accepted_by_supabase_auth(self) -> None:
         verifier, client, _, token = self.verifier(make_token(), status=401)

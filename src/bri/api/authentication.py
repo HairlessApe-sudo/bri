@@ -5,7 +5,7 @@ import base64
 import json
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -19,6 +19,10 @@ class AuthenticationRejected(Exception):
     """The supplied credential cannot access BRI."""
 
 
+class MfaRejected(AuthenticationRejected):
+    """Verified TOTP assurance was missing; do not export the token claims."""
+
+
 class AuthenticationUnavailable(Exception):
     """The identity provider could not be reached safely."""
 
@@ -30,6 +34,50 @@ class AuthenticatedIdentity:
     issuer: str
     assurance_level: str
     assurance_methods: tuple[str, ...]
+    # Provider event times (Unix seconds), not token issue or local session times.
+    # Legacy/synthetic constructors cannot supply verified evidence.
+    totp_authenticated_at: int | None = field(default=None, init=False)
+    primary_authenticated_at: int | None = field(default=None, init=False)
+    # Cutoff evidence only; not a password-change or recovery completion event.
+    recovery_authenticated_at: int | None = field(default=None, init=False)
+
+
+def has_recent_mfa(identity: AuthenticatedIdentity | None) -> bool:
+    """Check at action time; this is additional to ordinary session authorization."""
+    if not isinstance(identity, AuthenticatedIdentity):
+        return False
+    timestamp = identity.totp_authenticated_at
+    now = time.time()
+    return (
+        identity.issuer == f"https://{EXPECTED_PROJECT_REF}.supabase.co/auth/v1"
+        and identity.assurance_level == "aal2"
+        and "totp" in identity.assurance_methods
+        and type(timestamp) is int
+        and now - 15 * 60 <= timestamp <= now
+    )
+
+
+_TOTP_METHODS = ("totp", "mfa/totp")
+_NON_PRIMARY = (*_TOTP_METHODS, "mfa/phone", "mfa/webauthn", "mfa/recovery_code", "token_refresh")
+
+
+def _verified_amr_times(amr: list[Any], now: float) -> tuple[int | None, int | None, int | None]:
+    """Return TOTP, password, and recovery-cutoff times from structured AMR only."""
+    if not all(isinstance(row, dict) and isinstance(row.get("method"), str) for row in amr):
+        return None, None, None
+
+    def event_time(rows: list[Any]) -> int | None:
+        if len(rows) != 1:
+            return None
+        timestamp = rows[0].get("timestamp")
+        return timestamp if type(timestamp) is int and 0 < timestamp <= now else None
+
+    totp_time = event_time([row for row in amr if row["method"] in _TOTP_METHODS])
+    primary = [row for row in amr if row["method"] not in _NON_PRIMARY]
+    if len(primary) != 1 or primary[0]["method"] not in ("password", "recovery"):
+        return totp_time, None, None
+    first_time = event_time(primary)
+    return totp_time, first_time if primary[0]["method"] == "password" else None, first_time
 
 
 class SupabaseTokenVerifier:
@@ -163,22 +211,25 @@ class SupabaseTokenVerifier:
             for factor in factors
         )
         amr = claims.get("amr")
-        has_totp = isinstance(amr, list) and any(
-            isinstance(method, dict) and method.get("method") == "totp"
-            for method in amr
-        )
-        if claims.get("aal") != "aal2" or not has_totp or not has_verified_totp_factor:
-            raise AuthenticationRejected("Verified TOTP MFA is required")
-
+        if not isinstance(amr, list):
+            raise MfaRejected("Verified TOTP MFA is required")
         methods = tuple(sorted({
-            method["method"]
+            "totp" if method["method"] in _TOTP_METHODS else method["method"]
             for method in amr
             if isinstance(method, dict) and isinstance(method.get("method"), str)
-        })) if isinstance(amr, list) else ()
-        return AuthenticatedIdentity(
+        }))
+        if claims.get("aal") != "aal2" or "totp" not in methods or not has_verified_totp_factor:
+            raise MfaRejected("Verified TOTP MFA is required")
+        identity = AuthenticatedIdentity(
             auth_user_id=auth_user_id,
             session_id=session_id,
             issuer=issuer,
             assurance_level=str(claims["aal"]),
             assurance_methods=methods,
         )
+        # Initialize the frozen evidence fields only on the verified path.
+        totp, password, recovery = _verified_amr_times(amr, now)
+        object.__setattr__(identity, "totp_authenticated_at", totp)
+        object.__setattr__(identity, "primary_authenticated_at", password)
+        object.__setattr__(identity, "recovery_authenticated_at", recovery)
+        return identity

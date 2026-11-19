@@ -63,7 +63,8 @@ export function buildBackendRequest(path, searchParams, env = process.env, optio
   const normalized = `/${String(path).replace(/^\/+|\/+$/g, '')}`;
   const isRead = method === 'GET' && READ_ROUTES.some((route) => route.test(normalized));
   const isSessionAction = normalized === '/v1/auth/session' && ['POST', 'DELETE'].includes(method);
-  if (!isRead && !isSessionAction) throw new BackendRequestError('Not found', 404);
+  const isRecovery = normalized === '/v1/auth/recovery/invalidate' && method === 'POST';
+  if (!isRead && !isSessionAction && !isRecovery) throw new BackendRequestError('Not found', 404);
 
   const mode = resolveUiAuthMode(env);
   if (mode === 'synthetic' && !isRead) throw new BackendRequestError('Not found', 404);
@@ -123,4 +124,20 @@ export function assertSameOriginMutation(requestUrl, originHeader) {
   if (typeof originHeader !== 'string' || originHeader !== requestOrigin) {
     throw new BackendRequestError('Cross-origin request denied', 403);
   }
+}
+
+export async function prepareProxyRequest(request, path, env, readSessionToken) {
+  const method = request.method.toUpperCase();
+  let accessToken;
+  if (resolveUiAuthMode(env) === 'supabase') {
+    assertNoSpoofedIdentityHeaders(request.headers);
+    if (method === 'POST' || method === 'DELETE') {
+      assertSameOriginMutation(request.url, request.headers.get('origin'));
+      if (request.body !== null) throw new BackendRequestError('Session routes do not accept a body', 400);
+    }
+    accessToken = await readSessionToken();
+    if (!accessToken) throw new BackendRequestError('Authentication required', 401);
+  }
+  const target = buildBackendRequest(path, new URL(request.url).searchParams, env, {method, accessToken});
+  return {...target, accessToken};
 }
