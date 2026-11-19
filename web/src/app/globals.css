@@ -14,3 +14,5 @@
 .directory-create summary{cursor:pointer;font-weight:600}
 .directory-create-fields{border:0;padding:0;margin:0;min-width:0}
 .directory-create-fields:disabled .auth-submit{cursor:not-allowed}
+.auth-form .lifecycle-confirm{display:flex;align-items:center;gap:8px}
+.auth-form .lifecycle-confirm input{width:auto;height:auto}

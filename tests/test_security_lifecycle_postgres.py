@@ -61,11 +61,9 @@ class LifecyclePostgres(unittest.TestCase):
         target = root/'db'/'migrations'
         target.mkdir(parents=True)
         for migration in (ROOT/'db'/'migrations').glob('*.sql'):
-            if migration.name[:4] <= '0013':
-                shutil.copy(migration, target)
-        # HTTP denials write via 0015; replay/recovery enforce the cap in 0016.
-        for required in ('0015_boundary_audit.sql', '0016_session_deadline.sql'):
-            shutil.copy(ROOT/'db'/'migrations'/required, target)
+            # These tests call the current Database adapter, including the
+            # structured-TOTP session-start overload added in 0019.
+            shutil.copy(migration, target)
         supplied = 'postgresql://bri_migrator@db.' + migrate.EXPECTED_REF + '.supabase.co:5432/postgres'
 
         def restricted(dsn, **kwargs):

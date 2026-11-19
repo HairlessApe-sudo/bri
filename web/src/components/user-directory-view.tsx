@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { DisabledCreateUser } from '@/components/create-user-fields';
 import { StateMessage } from '@/components/data-state';
 import type { DirectoryUser, DirectoryUserPage } from '@/lib/api';
@@ -7,7 +8,7 @@ type Remote<T> = { data?: T | null; error?: Error | null; loading?: boolean };
 const statusLabels = { pending: 'Pending', active: 'Active', suspended: 'Suspended', deactivated: 'Deactivated' };
 const roleLabels = { user: 'User', superuser: 'Superuser' };
 const mfaLabels = { verified: 'Verified', unknown: 'Unknown' };
-const userName = (user: DirectoryUser) => user.display_name?.trim() || 'Unnamed user';
+const userName = (user: Pick<DirectoryUser, 'display_name'>) => user.display_name?.trim() || 'Unnamed user';
 
 function DirectoryError({ error, detail = false }: { error: Error; detail?: boolean }) {
   const { status } = error as Error & { status?: number };
@@ -47,17 +48,28 @@ export function DirectoryList({ data, error, loading, offset, onPage, onSelect }
   </>;
 }
 
-export function DirectoryDetail({ data, error, loading, onBack }: Remote<DirectoryUser> & { onBack: () => void }) {
+export function DirectoryAccountFields({ user }: { user: Pick<DirectoryUser, 'display_name' | 'status' | 'role'> }) {
+  return <>
+    <div><dt>Display name</dt><dd className="breakable">{userName(user)}</dd></div>
+    <div><dt>Status</dt><dd>{statusLabels[user.status]}</dd></div>
+    <div><dt>Role</dt><dd>{roleLabels[user.role]}</dd></div>
+  </>;
+}
+
+export function DirectoryDetail({ data, error, loading, onBack, lifecycle }: Remote<DirectoryUser> & {
+  onBack: () => void; lifecycle?: ReactNode;
+}) {
   return <section className="content-panel" aria-label="User details">
     <div className="panel-toolbar"><h2>User details</h2><button className="source-pill directory-back" type="button" onClick={onBack}>Back to directory</button></div>
     {error ? <DirectoryError error={error} detail /> : <StateMessage loading={loading}>
-      {data && <dl className="provenance-grid">
-        <div><dt>Display name</dt><dd className="breakable">{userName(data)}</dd></div>
-        <div><dt>Status</dt><dd>{statusLabels[data.status]}</dd></div>
-        <div><dt>Role</dt><dd>{roleLabels[data.role]}</dd></div>
-        <div><dt>MFA</dt><dd>{mfaLabels[data.mfa_status]}</dd></div>
-        <div className="hash-field"><dt>User ID</dt><dd className="mono breakable">{data.id}</dd></div>
-      </dl>}
+      {data && <>
+        <dl className="provenance-grid">
+          {!lifecycle && <DirectoryAccountFields user={data} />}
+          <div><dt>MFA</dt><dd>{mfaLabels[data.mfa_status]}</dd></div>
+          <div className="hash-field"><dt>User ID</dt><dd className="mono breakable">{data.id}</dd></div>
+        </dl>
+        {lifecycle ?? <p className="auth-unavailable">Lifecycle changes are disabled in this release. This detail is read-only.</p>}
+      </>}
     </StateMessage>}
   </section>;
 }

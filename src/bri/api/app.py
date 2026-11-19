@@ -44,6 +44,7 @@ from bri.api.approval_routes import create_approval_router
 from bri.api.boundary_audit import audit_denial, mark
 from bri.api.database import Database, DatabaseUnavailable, ProtectedAccessDenied, TenantSession
 from bri.api.user_directory import create_user_directory_router
+from bri.api.user_lifecycle import create_user_lifecycle_router
 from bri.api.user_provisioning import create_user_provisioning_router
 from bri.knowledge.query import EvidenceCitation, KnowledgeItem, answer_question
 
@@ -138,7 +139,7 @@ class DatabaseProtocol(Protocol):
         issuer: str,
         subject: str,
         session_id: str,
-        *, correlation_id: str, primary_authenticated_at: int | None,
+        *, correlation_id: str, primary_authenticated_at: int | None, totp_authenticated_at: int | None,
     ) -> datetime | None: ...
 
     def revoke_auth_session(self, auth_user_id: str, session_id: str, *, correlation_id: str) -> bool: ...
@@ -736,6 +737,7 @@ def create_app(
             identity.session_id,
             correlation_id=request.state.request_id,
             primary_authenticated_at=identity.primary_authenticated_at,
+            totp_authenticated_at=identity.totp_authenticated_at,
         )
         if expires_at is None:
             raise HTTPException(status_code=403, detail="BRI session cannot be started for this identity")
@@ -1190,6 +1192,7 @@ def create_app(
 
     app.include_router(create_approval_router(principal_dependency=current_principal))
     app.include_router(create_user_provisioning_router())
+    app.include_router(create_user_lifecycle_router())
     app.include_router(create_user_directory_router(
         principal_dependency=current_principal,
         protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),

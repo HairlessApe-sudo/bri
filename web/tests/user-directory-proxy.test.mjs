@@ -45,6 +45,15 @@ test('provisioning POST and status GET are not forwarded in hosted or synthetic 
   }
 });
 
+test('lifecycle GET and PATCH are blocked before session lookup in hosted and synthetic mode', async () => {
+  const suffix = `/${id}/lifecycle`;
+  for (const mode of [env, { BRI_UI_AUTH_MODE: 'synthetic', BRI_UI_DEV_IDENTITY: 'fixture' }]) {
+    for (const method of ['GET', 'PATCH']) {
+      await assert.rejects(proxy.prepareProxyRequest(request(suffix, { method }), `${list}${suffix}`, mode, unused), status(404));
+    }
+  }
+});
+
 test('directory permits only unique list parameters and accepts no detail query parameters', async () => {
   for (const query of ['q=x&q=y', 'offset=0&offset=1', 'limit=25&limit=50', 'role=admin', 'tenant_id=other', 'limit=0', 'limit=101', 'limit=1.5', 'limit=0001', 'offset=-1', 'offset=1e2', 'offset=10001', 'q=%00', `q=${'a'.repeat(129)}`]) {
     await assert.rejects(proxy.prepareProxyRequest(request(`?${query}`), list, env, unused), status(400));

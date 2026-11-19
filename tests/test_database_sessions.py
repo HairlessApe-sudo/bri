@@ -85,14 +85,15 @@ class AuthSessionDatabaseTests(unittest.TestCase):
     def test_start_passes_server_evidence_and_correlation(self) -> None:
         connection = SessionConnection()
         correlation = uuid4()
-        primary = dt.datetime.now(dt.timezone.utc)
+        totp = dt.datetime.now(dt.timezone.utc)
+        primary = totp - dt.timedelta(seconds=2)
         with patch("bri.api.database.psycopg.connect", return_value=connection):
             self.database.start_auth_session(AUTH_USER_ID, ISSUER, AUTH_USER_ID, SESSION_ID,
-                                             correlation_id=correlation, primary_authenticated_at=primary)
+                                             correlation_id=correlation, primary_authenticated_at=primary,
+                                             totp_authenticated_at=totp)
         query, params = connection.queries[-1]
-        self.assertIn("bri.start_security_session", query)
-        self.assertIn(primary, params)
-        self.assertIn(str(correlation), params)
+        self.assertIn("bri.start_security_session(%s,%s,%s,%s,%s)", query)
+        self.assertEqual(params, (ISSUER, SESSION_ID, primary, totp, str(correlation)))
 
     def test_expired_session_cannot_be_renewed_with_a_refreshed_auth_token(self) -> None:
         connection = SessionConnection(active=False)

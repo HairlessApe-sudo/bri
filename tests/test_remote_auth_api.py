@@ -84,7 +84,7 @@ class FakeRemoteDatabase:
     def auth_session_is_active(self, auth_user_id: str, session_id: str) -> bool:
         return auth_user_id == AUTH_USER_ID and session_id == SESSION_ID and self.active_session
 
-    def start_auth_session(self, auth_user_id: str, issuer: str, subject: str, session_id: str, *, correlation_id: str, primary_authenticated_at: int | None):
+    def start_auth_session(self, auth_user_id: str, issuer: str, subject: str, session_id: str, *, correlation_id: str, primary_authenticated_at: int | None, totp_authenticated_at: int | None):
         self.correlation_id = correlation_id
         if (auth_user_id, issuer, subject, session_id) != (AUTH_USER_ID, ISSUER, AUTH_USER_ID, SESSION_ID):
             return None
@@ -177,6 +177,18 @@ class RemoteAuthenticationApiTests(unittest.TestCase):
                 })
                 self.assertEqual(response.status_code, 403)
                 self.assertEqual(response.json(), {'detail': 'Provisioning stage is disabled'})
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertEqual(verifier.tokens, [])
+
+    def test_normal_app_disables_lifecycle_before_parsing_or_authentication(self) -> None:
+        client, verifier, _ = make_app(principal=self.principal)
+        path = f'/v1/users/{uuid4()}/lifecycle'
+        for method in ('GET', 'PATCH'):
+            with self.subTest(method=method):
+                response = client.request(method, path, content=b'{', headers={
+                    'Content-Type': 'application/json', 'Authorization': 'Bearer test-token',
+                })
+                self.assertEqual(response.status_code, 403)
                 self.assertEqual(response.headers['Cache-Control'], 'no-store')
         self.assertEqual(verifier.tokens, [])
 

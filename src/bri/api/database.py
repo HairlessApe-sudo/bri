@@ -269,11 +269,12 @@ class Database:
         *,
         correlation_id: UUID | str | None = None,
         primary_authenticated_at: datetime | int | None = None,
+        totp_authenticated_at: datetime | int | None = None,
     ) -> datetime | None:
         """Start once per verified provider session, never extend its deadline.
 
-        Supply the middleware UUID and immutable primary password-AMR time of
-        this verified session (UTC datetime or Unix seconds, never JWT iat).
+        Supply only middleware correlation and verified password/TOTP AMR times
+        (UTC datetime or Unix seconds, never JWT issuance time).
         Missing primary evidence fails closed after an access/credential change.
         """
         try:
@@ -281,10 +282,10 @@ class Database:
             if issuer != f"{self.supabase_url.rstrip('/')}/auth/v1" or str(UUID(subject)) != user:
                 return None
             params = (issuer, str(UUID(session_id)), self._verified_time(primary_authenticated_at),
-                      self._correlation(correlation_id))
+                      self._verified_time(totp_authenticated_at), self._correlation(correlation_id))
         except (ValueError, TypeError, AttributeError, OSError, OverflowError):
             return None
-        return self._security_call(user, "SELECT bri.start_security_session(%s,%s,%s,%s)", params)
+        return self._security_call(user, "SELECT bri.start_security_session(%s,%s,%s,%s,%s)", params)
 
     @staticmethod
     def _verified_time(value: datetime | int | None) -> datetime | None:

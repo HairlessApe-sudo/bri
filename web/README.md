@@ -61,7 +61,13 @@ The Users screen (`/users`) is available in authenticated mode, not synthetic de
 
 After an authorized directory list, the Create User entry explains why provisioning is unavailable and shows disabled display name and email fields. Synthetic mode has no directory access. Neither release mode forwards provisioning requests; there is no feature flag or provider setup screen.
 
-The frontend contract is exercised with an injected transport in local tests only. A manual retry after a missing acknowledgement uses the same UUID and payload while the form remains open. After acknowledgement, status can be checked manually by the returned ID. The screen does not poll, resend invitations, or treat an invitation acknowledgement as account activation.
+The frontend contract is exercised with an injected transport in local tests only. A manual retry after a missing acknowledgement uses the same UUID and payload while the form remains open. After acknowledgement, a manual status GET uses the original request key, not the returned account UUID. The screen does not poll, resend invitations, or treat an invitation acknowledgement as account activation.
+
+## User lifecycle (A11.3): release read-only
+
+Authenticated directory details show the account's status and explain that lifecycle changes are disabled in this release. Neither hosted nor synthetic mode proxies lifecycle requests. There is no environment switch to enable them.
+
+The isolated `StagedDirectoryDetail` takes an explicitly injected transport for local exercises. Its staged GET and PATCH use `/v1/users/{id}/lifecycle`. A validated server snapshot provides the displayed name, status, role, version, and action permissions. Editing changes only the display name; suspension and reactivation require a reason and confirmation. PATCH uses the last server version and the UI updates only from a confirmed response. A conflict or unconfirmed change requires an explicit refresh and a new action; nothing is retried automatically.
 
 ## Controlled password recovery (A10): hosted flow unavailable
 

@@ -191,6 +191,8 @@ test('manual status checks use the submitted request key and validate the distin
 test('directory detail renders the detail response rather than relying on the list record', () => {
   const html = render(DirectoryDetail, { data: { ...user, display_name: 'Detail fixture', status: 'active', role: 'user', mfa_status: 'verified' } });
   for (const value of ['Detail fixture', 'Active', 'User', 'Verified', id, 'Back to directory']) assert.ok(html.includes(value));
+  assert.match(html, /Lifecycle changes are disabled in this release/);
+  assert.doesNotMatch(html, /<form|<input|<select|>Suspend<|>Reactivate<|>Edit display name</);
 });
 
 test('directory distinguishes loading, authentication, denied, missing user, and failure without reflecting error text', () => {
@@ -199,8 +201,184 @@ test('directory distinguishes loading, authentication, denied, missing user, and
     const html = render(DirectoryDetail, { error: Object.assign(new Error('sensitive failure text'), { status }) });
     assert.ok(html.includes(message));
     assert.match(html, /role="alert"/);
-    assert.doesNotMatch(html, /sensitive failure text/);
+    assert.doesNotMatch(html, /sensitive failure text|Lifecycle changes are disabled/);
   }
+});
+
+const lifecyclePath = `/v1/users/${id}/lifecycle`;
+const lifecycle = { id, display_name: 'Committed name', status: 'active', role: 'user', version: 3,
+  can_edit: true, can_suspend: true, can_reactivate: false };
+
+test('staged lifecycle sends only the edit contract and renders nothing optimistic', async () => {
+  const { createLifecycleFlow } = await import('../src/lib/user-lifecycle.ts');
+  const calls = [];
+  let finishPatch;
+  let view;
+  const flow = createLifecycleFlow(id, async (path, init) => {
+    calls.push([path, init]);
+    if (init.method === 'GET') return Response.json(lifecycle);
+    return new Promise((resolve) => { finishPatch = resolve; });
+  }, (next) => { view = next; });
+  assert.deepEqual(calls, []);
+  await flow.refresh();
+  assert.deepEqual(calls, [[lifecyclePath, { method: 'GET' }]]);
+  assert.deepEqual(view.account, lifecycle);
+  flow.select('edit');
+  for (const name of [' ', 'a'.repeat(129), 'bad\u0000name']) await flow.submit('edit', name, false);
+  assert.equal(calls.length, 1);
+  const pending = flow.submit('edit', '  Requested name  ', false);
+  await flow.submit('edit', 'Another name', false);
+  await flow.refresh();
+  assert.equal(calls.length, 2);
+  assert.equal(view.phase, 'saving');
+  assert.deepEqual(view.account, lifecycle);
+  assert.deepEqual(calls[1], [lifecyclePath, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'edit', expected_version: 3, display_name: 'Requested name' }) }]);
+  const committed = { ...lifecycle, display_name: 'Server name', version: 2, can_suspend: false };
+  finishPatch(Response.json(committed));
+  await pending;
+  assert.deepEqual(view.account, committed);
+  assert.equal(view.action, null);
+  flow.select('suspend');
+  assert.equal(view.action, null);
+  assert.equal(calls.length, 2);
+});
+
+test('staged suspend and reactivate require an action-specific reason and explicit confirmation', async () => {
+  const { createLifecycleFlow } = await import('../src/lib/user-lifecycle.ts');
+  const suspended = { ...lifecycle, role: 'superuser', status: 'suspended', version: 4, can_edit: false, can_suspend: false, can_reactivate: true };
+  const bodies = [];
+  let view;
+  const flow = createLifecycleFlow(id, async (_, init) => {
+    if (init.method === 'GET') return Response.json({ ...lifecycle, role: 'superuser' });
+    bodies.push(JSON.parse(init.body));
+    return Response.json(bodies.length === 1 ? suspended : { ...lifecycle, role: 'superuser', version: 5 });
+  }, (next) => { view = next; });
+  await flow.refresh();
+  flow.select('reactivate');
+  await flow.submit('reactivate', 'review_complete', true);
+  flow.select('suspend');
+  await flow.submit('suspend', '', true);
+  await flow.submit('suspend', 'access_restored', true);
+  await flow.submit('suspend', 'policy_violation', false);
+  assert.deepEqual(bodies, []);
+  assert.match(view.error, /confirm/i);
+  flow.select(null);
+  await flow.submit('suspend', 'access_review', true);
+  assert.deepEqual(bodies, []);
+  flow.select('suspend');
+  await flow.submit('suspend', 'access_review', true);
+  assert.deepEqual(view.account, suspended);
+  flow.select('reactivate');
+  await flow.submit('reactivate', 'temporary_leave', true);
+  await flow.submit('reactivate', 'review_complete', false);
+  assert.equal(bodies.length, 1);
+  await flow.submit('reactivate', 'access_restored', true);
+  assert.deepEqual(bodies, [
+    { action: 'suspend', expected_version: 3, reason: 'access_review' },
+    { action: 'reactivate', expected_version: 4, reason: 'access_restored' },
+  ]);
+  assert.equal(view.account.status, 'active');
+});
+
+test('stale lifecycle changes cannot be replayed; explicit refresh and a new action are required', async () => {
+  const { createLifecycleFlow } = await import('../src/lib/user-lifecycle.ts');
+  const refreshed = { ...lifecycle, display_name: 'Concurrent name', version: 8 };
+  const calls = [];
+  let view;
+  const flow = createLifecycleFlow(id, async (_, init) => {
+    calls.push([init.method, init.body && JSON.parse(init.body)]);
+    if (calls.length === 1) return Response.json(lifecycle);
+    if (calls.length === 2) return Response.json({ detail: 'private conflict detail' }, { status: 409 });
+    if (calls.length === 3) return Response.json(refreshed);
+    return Response.json({ ...refreshed, status: 'suspended', version: 9, can_suspend: false, can_reactivate: true });
+  }, (next) => { view = next; });
+  await flow.refresh();
+  flow.select('suspend');
+  await flow.submit('suspend', 'policy_violation', true);
+  assert.equal(view.phase, 'refresh-required');
+  assert.equal(view.action, null);
+  assert.deepEqual(view.account, lifecycle);
+  assert.match(view.error, /changed.*refresh/i);
+  assert.doesNotMatch(view.error, /private/);
+  flow.select('suspend');
+  await flow.submit('suspend', 'policy_violation', true);
+  assert.equal(calls.length, 2);
+  await flow.refresh();
+  assert.deepEqual(view.account, refreshed);
+  await flow.submit('suspend', 'policy_violation', true);
+  assert.equal(calls.length, 3);
+  flow.select('suspend');
+  await flow.submit('suspend', 'policy_violation', true);
+  assert.deepEqual(calls.map(([method]) => method), ['GET', 'PATCH', 'GET', 'PATCH']);
+  assert.equal(calls[3][1].expected_version, 8);
+});
+
+test('malformed lifecycle responses never enable actions or replace the last confirmed account', async () => {
+  const { createLifecycleFlow } = await import('../src/lib/user-lifecycle.ts');
+  assert.throws(() => createLifecycleFlow(`${id}?tenant_id=other`, () => assert.fail(), () => assert.fail()), /Invalid user ID/);
+  for (const value of [null, 'invalid', { ...lifecycle, id: '00000000-0000-4000-8000-000000000099' },
+    { ...lifecycle, display_name: 1 }, { ...lifecycle, role: 'admin' }, { ...lifecycle, status: 'unknown' },
+    { ...lifecycle, version: -1 }, { ...lifecycle, version: 3.5 }, { ...lifecycle, version: '4' },
+    { ...lifecycle, version: Number.MAX_SAFE_INTEGER + 1 }, { ...lifecycle, can_reactivate: 'false' },
+    { ...lifecycle, can_suspend: undefined }, { ...lifecycle, email: 'private@example.test' }]) {
+    let view;
+    const flow = createLifecycleFlow(id, async () => Response.json(value), (next) => { view = next; });
+    await flow.refresh();
+    assert.equal(view.phase, 'refresh-required');
+    assert.equal(view.account, null);
+    assert.doesNotMatch(view.error, /private/);
+  }
+  for (const failedPatch of [() => Response.json({ ...lifecycle, status: 'suspended' }),
+    () => new Response('private invalid JSON'), () => { throw new Error('private network error'); }]) {
+    let view;
+    const methods = [];
+    const flow = createLifecycleFlow(id, async (_, init) => {
+      methods.push(init.method);
+      return init.method === 'GET' ? Response.json(lifecycle) : failedPatch();
+    }, (next) => { view = next; });
+    await flow.refresh();
+    flow.select('suspend');
+    await flow.submit('suspend', 'temporary_leave', true);
+    assert.equal(view.phase, 'refresh-required');
+    assert.deepEqual(view.account, lifecycle);
+    assert.match(view.error, /could not confirm/i);
+    assert.doesNotMatch(view.error, /private/);
+    assert.deepEqual(methods, ['GET', 'PATCH']);
+  }
+});
+
+test('the staged detail panel shows only permitted buttons, the selected form, and committed status', async () => {
+  const { LifecyclePanel, StagedDirectoryDetail } = await import('../src/components/user-lifecycle.tsx');
+  const props = { view: { phase: 'ready', account: lifecycle, action: null } };
+  const html = render(LifecyclePanel, props);
+  assert.match(html, /<dt>Status<\/dt><dd>Active<\/dd>/);
+  assert.match(html, />Edit display name<\/button>/);
+  assert.match(html, />Suspend<\/button>/);
+  assert.doesNotMatch(html, />Reactivate<\/button>|<form/);
+  const edit = render(LifecyclePanel, { view: { ...props.view, action: 'edit' } });
+  assert.match(edit, /name="display_name"/);
+  assert.doesNotMatch(edit, /name="(?:reason|confirm|role|tenant_id|version|email)"/);
+  for (const [action, reasons] of [['suspend', ['policy_violation', 'access_review', 'temporary_leave']],
+    ['reactivate', ['review_complete', 'access_restored']]]) {
+    const account = action === 'suspend' ? lifecycle : { ...lifecycle, status: 'suspended', can_edit: false, can_suspend: false, can_reactivate: true };
+    const form = render(LifecyclePanel, { view: { ...props.view, account, action } });
+    assert.match(form, /<select[^>]*name="reason"[^>]*required/);
+    assert.match(form, /<input[^>]*type="checkbox"[^>]*required/);
+    assert.deepEqual([...form.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]), reasons);
+    assert.doesNotMatch(form, /name="display_name"/);
+  }
+  const stale = render(LifecyclePanel, { view: { phase: 'refresh-required', account: lifecycle, action: null, error: 'Refresh first' } });
+  assert.match(stale, /Last confirmed account details/);
+  assert.match(stale, /role="alert">Refresh first/);
+  assert.match(stale, />Refresh lifecycle<\/button>/);
+  assert.doesNotMatch(stale, />Edit display name<|>Suspend<|>Reactivate<|<form/);
+  const denied = render(LifecyclePanel, { view: { ...props.view, account: { ...lifecycle, can_edit: false, can_suspend: false } } });
+  assert.match(denied, /No lifecycle changes are permitted/);
+  assert.doesNotMatch(denied, />Edit display name<|>Suspend<|>Reactivate</);
+  const staged = render(StagedDirectoryDetail, { data: user, transport: () => assert.fail('No server-render transport') });
+  assert.match(staged, /User details[^]*Loading lifecycle/);
+  assert.doesNotMatch(staged, /<dt>Status<\/dt>|Lifecycle changes are disabled/);
 });
 
 test('Next dev request logging omits directory search and detail URLs', async () => {
@@ -209,6 +387,27 @@ test('Next dev request logging omits directory search and detail URLs', async ()
   for (const url of [`${listPath}?q=private`, `${listPath}/${id}`, `/users?q=private`, `/api/bri/v1/%75sers/${id}`]) {
     assert.ok(rules.some((rule) => rule.test(url)), `Missing logging exclusion for a directory URL`);
   }
+});
+
+test('the release Next handler denies lifecycle GET without reaching a session or upstream and exports no PATCH', async (t) => {
+  const previousMode = process.env.BRI_UI_AUTH_MODE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  t.after(() => {
+    if (previousMode === undefined) delete process.env.BRI_UI_AUTH_MODE; else process.env.BRI_UI_AUTH_MODE = previousMode;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousNodeEnv;
+  });
+  const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('Unexpected upstream'); });
+  assert.equal(route.PATCH, undefined);
+  for (const mode of ['supabase', 'synthetic']) {
+    process.env.BRI_UI_AUTH_MODE = mode;
+    const result = await route.GET(new Request(`https://ui.example.test/api/bri${lifecyclePath}`), {
+      params: Promise.resolve({ path: ['v1', 'users', id, 'lifecycle'] }),
+    });
+    assert.equal(result.status, 404);
+    assert.equal(result.headers.get('cache-control'), 'no-store');
+  }
+  assert.equal(fetch.mock.callCount(), 0);
 });
 
 test('directory client and Next handler read list and detail through the same-origin boundary', async (t) => {

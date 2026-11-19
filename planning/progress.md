@@ -3,6 +3,12 @@
 Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A11.3 — Ordinary-user lifecycle management (2026-11-19)
+
+- Added staged display-name editing, suspension and reactivation for same-tenant Users and SuperUsers. Each action has a distinct tenant-root permission; lifecycle actions require fresh verified TOTP and an allowlisted reason. Detail controls require confirmation and use the committed version, with explicit refresh after a conflict.
+- Migration `0019_user_lifecycle.sql` preserves forced RLS and the two-eligible-admin rule. Missing, foreign and excluded targets return the same 404. Only suspensions created by this workflow can be reversed; out-of-band holds invalidate that authority. State, session revocation and audit events commit together. Reactivated users need post-reactivation password and TOTP evidence and cannot reuse revoked session IDs.
+- Verified locally: 85 focused backend tests (including two-tenant restricted-role PostgreSQL tests and the normal API session-start path), two verifier guard tests, 25 focused frontend tests, TypeScript checking and optimized build. Disposable migrations 0001–0019 passed checksum and no-op replay. No hosted mutations, provider changes, deployment or A11.4. See [the lifecycle boundary](../architecture/user-lifecycle.md).
+
 ## A11.2 — Secure user provisioning (2026-11-19)
 
 - Added an isolated provisioning and activation path. A verified client Admin needs a current BRI session, tenant-root `user:provision:create`, and recent TOTP to create a pending ordinary User. Pending accounts cannot start a BRI session. Activation requires verified password and TOTP evidence after dispatch for the exact provider identity bound to the invitation; no session or role grant is created by activation.
