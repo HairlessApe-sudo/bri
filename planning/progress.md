@@ -3,6 +3,11 @@
 Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A11.8 — MFA reset request and review (2026-11-19)
+
+- Added the isolated [MFA reset administration interface](../architecture/mfa-reset-administration.md): request, read-only queue, and review reuse A10 without enabling hosted access. The queue masks requester identity and projects expiry without persisting it. Migration `0026_mfa_reset_administration.sql` removes runtime execution of A10 request, decision, and status; the private test harness restores only the required access after checking the shipped ACLs. No permission was seeded.
+- Local verification: 518 backend and 98 frontend tests passed without failures or skips. TypeScript and the optimized build passed. Disposable PostgreSQL 16 verified all 26 migration checksums, no-op replay and forced RLS on 52 non-ledger tables. Provider verification and execution remained mocked.
+
 ## A11.7 — Current grants visibility (2026-11-19)
 
 - Added a read-only [current grants view](../architecture/account-current-grants.md) on ordinary account details. It requires separate grants-read authority, existing directory access and the viewer's independent exact-node access. Only the two approved permission codes are shown, with recorded and effective grants separated. No grant seeding or mutation was added.

@@ -56,8 +56,8 @@ export function DirectoryAccountFields({ user }: { user: Pick<DirectoryUser, 'di
   </>;
 }
 
-export function DirectoryDetail({ data, error, loading, onBack, lifecycle, delegation, deactivation, grants, history }: Remote<DirectoryUser> & {
-  onBack: () => void; lifecycle?: ReactNode; delegation?: ReactNode; deactivation?: ReactNode; grants?: ReactNode; history?: ReactNode;
+export function DirectoryDetail({ data, error, loading, onBack, lifecycle, delegation, deactivation, grants, history, children }: Remote<DirectoryUser> & {
+  onBack: () => void; lifecycle?: ReactNode; delegation?: ReactNode; deactivation?: ReactNode; grants?: ReactNode; history?: ReactNode; children?: ReactNode;
 }) {
   return <section className="content-panel" aria-label="User details">
     <div className="panel-toolbar"><h2>User details</h2><button className="source-pill directory-back" type="button" onClick={onBack}>Back to directory</button></div>
@@ -68,11 +68,12 @@ export function DirectoryDetail({ data, error, loading, onBack, lifecycle, deleg
           <div><dt>MFA</dt><dd>{mfaLabels[data.mfa_status]}</dd></div>
           <div className="hash-field"><dt>User ID</dt><dd className="mono breakable">{data.id}</dd></div>
         </dl>
-        {lifecycle ?? <p className="auth-unavailable">Lifecycle changes are disabled in this release.{!delegation && !deactivation && ' This detail is read-only.'}</p>}
+        {lifecycle ?? <p className="auth-unavailable">Lifecycle changes are disabled in this release.{!delegation && !deactivation && !children && ' This detail is read-only.'}</p>}
         {delegation ?? <p className="auth-unavailable">Permission delegation is disabled in this release.</p>}
         {deactivation ?? <p className="auth-unavailable">Account deactivation is unavailable in this release.</p>}
         {grants}
         {history}
+        {children}
       </>}
     </StateMessage>}
   </section>;

@@ -31,6 +31,13 @@ from bri.api.database import EXPECTED_PROJECT_REF
 
 ROOT = Path(__file__).resolve().parents[1]
 ISSUER = f"https://{EXPECTED_PROJECT_REF}.supabase.co/auth/v1"
+APPROVAL_APP_ROUTINES = (
+    "bri.approval_request(text,text,uuid,text,uuid)",
+    "bri.approval_decide(text,text,uuid,text)",
+    "bri.approval_status(text,text,uuid)",
+    "bri.read_mfa_reset_queue(text,uuid,uuid,text,integer,uuid,uuid)",
+    "bri.can_request_mfa_reset(text,uuid,uuid,text,uuid)",
+)
 
 
 def seed_approval_tenant(connect):
@@ -203,6 +210,21 @@ class ApprovalDatabase(unittest.TestCase):
             assert db.execute(
                 "SELECT version FROM bri.schema_migrations ORDER BY version"
             ).fetchall() == [(p.stem,) for p in files]
+
+        with cls.connect("bri_app") as db:
+            for routine in APPROVAL_APP_ROUTINES:
+                assert db.execute(
+                    "SELECT has_function_privilege(current_user,p.oid,'EXECUTE'), EXISTS ("
+                    "SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl "
+                    "WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE') "
+                    "FROM pg_proc p WHERE p.oid=%s::regprocedure",
+                    (routine,),
+                ).fetchone() == (False, False), routine
+
+        with cls.connect("bri_migrator") as db:
+            # Enable only these entry points inside disposable SQL/HTTP fixtures.
+            routines = ", ".join(APPROVAL_APP_ROUTINES)
+            db.execute(f"GRANT EXECUTE ON FUNCTION {routines} TO bri_app")
             db.execute(
                 "GRANT USAGE ON SCHEMA bri TO bri_approval_worker; GRANT EXECUTE ON FUNCTION "
                 "bri.approval_work(text,text,uuid,text,uuid[]) TO bri_approval_worker"

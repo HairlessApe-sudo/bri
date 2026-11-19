@@ -2,12 +2,15 @@
 
 import asyncio
 import os
+import socket
+import threading
 import time
 import unittest
 from uuid import UUID, uuid4
 
 import httpx
 import psycopg
+import uvicorn
 
 # Reuse the existing private-cluster fixture without collecting its test cases twice.
 import test_privileged_approvals_pg as pg
@@ -41,6 +44,20 @@ class DisabledApprovalRoutes(unittest.TestCase):
         ]:
             self.assertEqual(client.post(endpoint, json=body).status_code, 403)
         self.assertEqual(client.get(f"{PREFIX}/{aid}").status_code, 403)
+
+    def test_normal_mount_denies_administration_reads_before_auth(self):
+        def never():
+            self.fail("disabled runtime must not consult an auth service or database")
+
+        app = FastAPI()
+        app.include_router(create_approval_router(principal_dependency=never))
+        aid = uuid4()
+        with TestClient(app) as client:
+            for path in ("/queue?limit=1", f"/queue/{aid}", f"/eligibility/{aid}"):
+                with self.subTest(path=path):
+                    response = client.get(PREFIX + path)
+                    self.assertEqual(response.status_code, 403)
+                    self.assertEqual(response.json(), {"detail": "Approval stage is disabled"})
 
 
 @unittest.skipUnless(
@@ -87,13 +104,8 @@ class StagedApprovalRoutes(unittest.TestCase):
                 return httpx.Response(204)
             self.fail("unexpected provider call")
 
-        self.stage = create_staged_approval_app(
-            app_scope=lambda: self.connect("bri_app"),
-            worker_scope=lambda: self.connect("bri_approval_worker"),
-            private_socket=self.sock,
-            auth_transport=self.auth,
-            factor_transport=httpx.MockTransport(provider),
-        )
+        self.factor_transport = httpx.MockTransport(provider)
+        self.stage = self.build_stage()
         self.client = TestClient(
             self.stage, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)
         )
@@ -105,6 +117,16 @@ class StagedApprovalRoutes(unittest.TestCase):
         }
         self.url = f"{PREFIX}/{self.key}"
 
+    def build_stage(self, *, administration=False):
+        return create_staged_approval_app(
+            app_scope=lambda: self.connect("bri_app"),
+            worker_scope=lambda: self.connect("bri_approval_worker"),
+            private_socket=self.sock,
+            auth_transport=self.auth,
+            factor_transport=self.factor_transport,
+            mfa_reset_administration=administration,
+        )
+
     def headers(self, index, **kwargs):
         return self.actor_headers(self.actors[index], **kwargs)
 
@@ -113,6 +135,206 @@ class StagedApprovalRoutes(unittest.TestCase):
         token = make_token(sub=str(user), session_id=str(session), **kwargs)
         self.tokens[token] = str(user)
         return {"Authorization": "Bearer " + token}
+
+    def grant_administration(self, tenant, actors):
+        with self.connect("postgres") as db:
+            db.execute("INSERT INTO bri.role_permissions VALUES(%s,'reset','user:directory:read')", (tenant,))
+            db.execute("INSERT INTO bri.app_roles VALUES(%s,'queue','queue')", (tenant,))
+            db.execute("INSERT INTO bri.role_permissions VALUES(%s,'queue','account:mfa-reset:queue:read')", (tenant,))
+            db.execute("INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id) "
+                       "VALUES(%s,%s,'queue','root')", (tenant, actors[1][0]))
+            # Changing role permissions/assignments invalidates the old sessions.
+            for index in (0, 1):
+                actors[index] = (*actors[index][:2], uuid4())
+                db.execute("INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) "
+                           "VALUES (%s,%s,%s,clock_timestamp())", actors[index])
+
+    def test_administration_read_projection_is_masked_and_does_not_write(self):
+        self.grant_administration(self.t, self.actors)
+        foreign, foreign_actors = pg.seed_approval_tenant(self.connect)
+        self.grant_administration(foreign, foreign_actors)
+        with self.connect("postgres") as db:
+            db.execute("UPDATE bri.auth_principals SET display_name='Synthetic target' WHERE principal_id=%s",
+                       (self.actors[2][0],))
+        self.assertEqual(self.client.post(PREFIX, json=self.body, headers=self.headers(0)).status_code, 200)
+        queue = f"{PREFIX}/queue"
+        detail = f"{queue}/{self.key}"
+        stale = {"amr": [{"method": "totp", "timestamp": int(time.time()) - 1000}]}
+        requester, reviewer = self.headers(0, **stale), self.headers(1, **stale)
+
+        def counts():
+            with self.connect("postgres") as db:
+                return tuple(db.execute(f"SELECT count(*) FROM bri.{table}").fetchone()[0]
+                             for table in ("approval_events", "approval_votes", "security_audit_events"))
+
+        before = counts()
+        response = self.client.get(queue + "?limit=1", headers=reviewer)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        item, = response.json()["items"]
+        self.assertEqual(response.json(), {"items": [item], "next_cursor": None})
+        self.assertEqual(item, {
+            "approval_id": str(self.key), "target_id": self.body["target"],
+            "target_name": "Synthetic target", "requester_label": "Restricted requester",
+            "reason": "LOST_FACTOR", "requested_at": item["requested_at"],
+            "expires_at": item["expires_at"], "state": "PENDING", "reconciliation": "NONE",
+            "can_decide": True,
+        })
+        self.assertEqual(self.client.get(detail, headers=requester).json(), {**item, "can_decide": False})
+        missing = self.client.get(f"{queue}/{uuid4()}", headers=reviewer)
+        self.assertEqual(missing.status_code, 404)
+        foreign_reviewer = self.actor_headers(foreign_actors[1], **stale)
+        self.assertEqual(self.client.get(queue, headers=foreign_reviewer).json(),
+                         {"items": [], "next_cursor": None})
+        foreign_item = self.client.get(detail, headers=foreign_reviewer)
+        self.assertEqual((foreign_item.status_code, foreign_item.json()), (404, missing.json()))
+        unavailable = self.client.get(queue + f"?cursor={uuid4()}", headers=reviewer)
+        self.assertEqual(unavailable.status_code, 400)
+        self.assertEqual(unavailable.json(), {"detail": "Invalid approval queue query"})
+        lookups = self.lookups
+        for query in ("limit=101", "limit=1&limit=2", "cursor=untrusted-input", "actor=untrusted-input"):
+            with self.subTest(query=query):
+                malformed = self.client.get(f"{queue}?{query}", headers=reviewer)
+                self.assertEqual((malformed.status_code, malformed.json()), (400, unavailable.json()))
+                self.assertEqual(malformed.headers["Cache-Control"], "no-store")
+        self.assertEqual(self.lookups, lookups)
+        with self.connect("postgres") as db:
+            db.execute("UPDATE bri.privileged_approvals SET created_at=created_at-interval '25 hours',"
+                       "expires_at=expires_at-interval '25 hours' WHERE approval_id=%s", (self.key,))
+        expired = self.client.get(detail, headers=reviewer)
+        self.assertEqual(expired.status_code, 200, expired.text)
+        self.assertEqual((expired.json()["state"], expired.json()["can_decide"]), ("EXPIRED", False))
+        self.assertEqual(counts(), before)
+        with self.connect("postgres") as db:
+            self.assertEqual(db.execute("SELECT state FROM bri.privileged_approvals WHERE approval_id=%s",
+                                        (self.key,)).fetchone(), ("PENDING",))
+        self.assertEqual(self.deletes, 0)
+
+    def test_administration_omits_legacy_status_for_elapsed_approval(self):
+        self.grant_administration(self.t, self.actors)
+        requester, reviewer = self.headers(0), self.headers(1)
+        with TestClient(
+            self.build_stage(administration=True),
+            base_url="http://127.0.0.1",
+            client=("127.0.0.1", 50000),
+        ) as client:
+            created = client.post(PREFIX, json=self.body, headers=requester)
+            self.assertEqual(created.status_code, 200, created.text)
+            with self.connect("postgres") as db:
+                db.execute(
+                    "UPDATE bri.privileged_approvals SET created_at=created_at-interval '25 hours',"
+                    "expires_at=expires_at-interval '25 hours' WHERE approval_id=%s", (self.key,)
+                )
+
+            def persisted():
+                with self.connect("postgres") as db:
+                    state = db.execute("SELECT state FROM bri.privileged_approvals WHERE approval_id=%s",
+                                       (self.key,)).fetchone()
+                    counts = tuple(db.execute(f"SELECT count(*) FROM bri.{table}").fetchone()[0]
+                                   for table in ("approval_events", "security_audit_events"))
+                    return state, counts
+
+            before = persisted()
+            self.assertEqual(before[0], ("PENDING",))
+            detail = client.get(f"{PREFIX}/queue/{self.key}", headers=reviewer)
+            self.assertEqual(detail.status_code, 200, detail.text)
+            self.assertEqual((detail.json()["state"], detail.json()["can_decide"]), ("EXPIRED", False))
+            lookups = self.lookups
+            for path in (self.url, f"{PREFIX}/not-a-uuid"):
+                with self.subTest(path=path):
+                    legacy = client.get(path, headers=reviewer)
+                    self.assertEqual((legacy.status_code, legacy.json()), (404, {"detail": "Not Found"}))
+                    self.assertEqual(legacy.headers["Cache-Control"], "no-store")
+            self.assertEqual(persisted(), before)
+            self.assertEqual(self.lookups, lookups)
+
+    def test_administration_eligibility_requires_verified_directory_request_authority(self):
+        endpoint = f"{PREFIX}/eligibility/{self.body['target']}"
+        requester = self.headers(0, amr=[{"method": "totp", "timestamp": int(time.time()) - 1000}])
+        denied = self.client.get(endpoint, headers=requester)
+        self.assertEqual(denied.status_code, 403)
+        self.grant_administration(self.t, self.actors)
+        requester = self.headers(0, amr=[{"method": "totp", "timestamp": int(time.time()) - 1000}])
+        eligible = self.client.get(endpoint, headers=requester)
+        self.assertEqual(eligible.status_code, 200, eligible.text)
+        self.assertEqual(eligible.json(), {"eligible": True})
+        self.assertEqual(self.client.get(endpoint, headers=self.headers(2)).status_code, 403)
+        self.assertEqual(self.client.get(endpoint, headers=self.headers(3)).status_code, 403)
+        self.assertEqual(self.client.get(f"{PREFIX}/eligibility/{uuid4()}", headers=requester).json(),
+                         {"eligible": False})
+        with self.connect("postgres") as db:
+            db.execute("UPDATE bri.auth_sessions SET revoked_at=clock_timestamp() WHERE session_id=%s",
+                       (self.actors[0][2],))
+        self.assertEqual(self.client.get(endpoint, headers=requester).status_code, 403)
+
+    def test_administration_mutations_require_visibility_without_consuming_replay(self):
+        stage = self.build_stage(administration=True)
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+            server = uvicorn.Server(uvicorn.Config(stage, proxy_headers=False, access_log=False, log_level="error"))
+            thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not server.started and thread.is_alive() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(server.started)
+                with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+                    self.exercise_administration_mutations(client)
+            finally:
+                server.should_exit = True
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+    def exercise_administration_mutations(self, client):
+        # The real HTTP socket must pass the same private listener guard.
+        self.assertEqual(client.get(f"{PREFIX}/queue", headers={"X-Forwarded-For": "127.0.0.1"}).status_code, 403)
+        self.assertEqual(self.lookups, 0)
+        self.assertEqual(client.post(PREFIX, json=self.body, headers=self.headers(0)).status_code, 403)
+        self.grant_administration(self.t, self.actors)
+        requester, reviewer = self.headers(0), self.headers(1)
+        stale_reviewer = self.headers(1, amr=[{"method": "totp", "timestamp": int(time.time()) - 1000}])
+
+        peer_request = client.post(PREFIX, json=self.body, headers=reviewer)
+        self.assertEqual(peer_request.status_code, 200, peer_request.text)
+        decision_url = f"{self.url}/decision"
+        denial = client.post(decision_url, json={"decision": "REJECT"}, headers=requester)
+        self.assertEqual(denial.status_code, 403)
+        # Same otherwise-valid operation succeeds on the default, legacy A10
+        # harness. Neither the stage flag nor queue scope came from HTTP input.
+        control = self.client.post(decision_url, json={"decision": "REJECT"}, headers=requester)
+        self.assertEqual(control.json()["state"], "REJECTED")
+
+        queue = f"{PREFIX}/queue"
+        hidden = client.get(f"{queue}/{self.key}", headers=requester)
+        missing = client.get(f"{queue}/{uuid4()}", headers=requester)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual((hidden.status_code, hidden.json()), (404, missing.json()))
+        for decision, state in (("REJECT", "REJECTED"), ("APPROVE", "APPROVED")):
+            body = {**self.body, "request_id": str(uuid4())}
+            request = client.post(PREFIX, json=body, headers=requester)
+            self.assertEqual(request.status_code, 200, request.text)
+            self.assertEqual(request.json(), {"approval_id": body["request_id"], "state": "PENDING",
+                                              "correlation_id": request.headers["X-Request-ID"]})
+            page = client.get(queue, params={"limit": 1}, headers=reviewer)
+            self.assertEqual(page.status_code, 200, page.text)
+            self.assertEqual(page.json()["next_cursor"], body["request_id"])
+            item, = page.json()["items"]
+            self.assertEqual(item["approval_id"], body["request_id"])
+            following = client.get(queue, params={"limit": 1, "cursor": item["approval_id"]}, headers=reviewer)
+            self.assertEqual(following.status_code, 200, following.text)
+            self.assertNotEqual(following.json()["items"][0]["approval_id"], item["approval_id"])
+            endpoint = f"{PREFIX}/{body['request_id']}/decision"
+            self.assertEqual(client.post(endpoint, json={"decision": decision}, headers=stale_reviewer).status_code, 403)
+            self.assertEqual(client.post(endpoint, json={"decision": decision}, headers=requester).status_code, 403)
+            for _ in range(2):
+                outcome = client.post(endpoint, json={"decision": decision}, headers=reviewer)
+                self.assertEqual(outcome.status_code, 200, outcome.text)
+                self.assertEqual(outcome.json(), {"approval_id": body["request_id"], "state": state,
+                                                 "correlation_id": outcome.headers["X-Request-ID"]})
+            self.assertEqual(client.post(PREFIX, json=body, headers=requester).json()["state"], state)
+        self.assertEqual(self.deletes, 0)
 
     def test_other_tenant_admins_cannot_request_or_decide_for_this_client(self):
         tenant_b, actors_b = pg.seed_approval_tenant(self.connect)

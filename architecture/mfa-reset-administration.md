@@ -1,0 +1,11 @@
+# A11.8 — MFA reset request and review
+
+This is an isolated local administration interface for A10's existing `USER_MFA_RESET` process, not a new recovery mechanism. The request form is restricted to eligible active native Users. It uses A10's allowlisted reasons, stable request ID for idempotency, explicit submit, and server-verified recent TOTP. Approval or rejection is an A10 decision by a different eligible person. The existing worker and observer remain separate from the browser.
+
+The read-only queue and item projection show only the approval and directory-visible target identifiers, the allowed target label and reason, a neutral requester label, request and expiry times, bounded A10 state and reconciliation labels, and a server-computed decision indication. A live authorized requester can only inspect their own requests unless independently authorized to review others. Reviewers need the existing decision authority, independent directory access, and `account:mfa-reset:queue:read`; no grants are seeded. Reads use bounded stable pagination, do not persist expired states, and never append audit. Mutations independently enforce A10, including the fresh TOTP window, distinct-person checks and immutable transactional audit.
+
+## Database execution boundary
+
+Migration 0010 granted request, decision, and status execution to `bri_app`. Those routines rely on server-verified identity and TOTP supplied as transaction context by the staged repository. Denying normal HTTP routes alone does not remove that database capability. A11.8 removes runtime execution on those routines (status can write an expiry transition), preserves the A10 state machine and the separate worker and observer boundaries, and limits reactivation to test setup on private disposable PostgreSQL. No new hosted trust path, browser execution control, live provider access, or shared migration is part of this milestone.
+
+`APPROVED` authorizes no browser dispatch and proves no removal. `COMPLETED` represents a confirmed A10 removal outcome, not successful re-enrollment or restored BRI access. The panel surfaces safe reconciliation progress only, never provider identifiers, factor inventory, security internals or raw audit records.

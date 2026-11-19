@@ -35,6 +35,7 @@ from bri.access.approvals import (
 )
 from bri.access.policy import Principal
 from bri.api.authentication import (
+    AuthenticatedIdentity,
     AuthenticationRejected,
     AuthenticationUnavailable,
     MfaRejected,
@@ -43,17 +44,23 @@ from bri.api.authentication import (
 )
 from bri.api.boundary_audit import audit_denial, mark
 from bri.api.database import EXPECTED_PROJECT_REF, Database, DatabaseUnavailable
+from bri.api.mfa_reset_administration import (
+    AdministrationReader,
+    Eligibility,
+    QueueItem,
+    QueuePage,
+    Reason,
+    State,
+    queue_parameters,
+)
 
 PREFIX = "/v1/privileged-approvals"
-State = Literal[
-    "PENDING", "APPROVED", "REJECTED", "EXPIRED", "EXECUTING", "COMPLETED", "FAILED"
-]
 
 
 class CreateApproval(BaseModel):
     model_config = ConfigDict(extra="forbid")
     target: UUID
-    reason: Literal["LOST_FACTOR", "COMPROMISED_FACTOR", "REPLACED_DEVICE"]
+    reason: Reason
     request_id: UUID  # idempotency key, NOT the middleware correlation
 
 
@@ -70,6 +77,7 @@ class ApprovalReply(BaseModel):
 
 # Route names, not raw paths, are the action vocabulary. No incoming UUIDs.
 _ACTION = {"create": "approval_request", "decide": "approval_decision", "status": "approval_status"}
+_ADMIN_READS = frozenset({"queue", "queue_item", "eligibility"})
 
 
 class _SafeRoute(APIRoute):
@@ -77,7 +85,11 @@ class _SafeRoute(APIRoute):
         handle = super().get_route_handler()
 
         async def safe(request):
-            mark(request, _ACTION[self.name], "input")
+            if self.name in _ADMIN_READS:
+                # Distinguish guarded failures without writing audit for GETs.
+                request.state.approval_read = True
+            else:
+                mark(request, _ACTION[self.name], "input")
             try:
                 return await handle(request)
             except RequestValidationError:
@@ -100,11 +112,13 @@ class _SafeRoute(APIRoute):
 class _Stage:
     owner: FastAPI
     repo: ApprovalRepository
+    registry: Database
+    mfa_reset_administration: bool
 
 
 def _guard(request: Request, stage: _Stage | None):
     if stage is None or request.app is not stage.owner:
-        raise HTTPException(403, "Approval stage is disabled")
+        raise HTTPException(403, "Approval stage is disabled", headers={"Cache-Control": "no-store"})
     # Do not accept forwarded identity, routing, host or tenant selectors. Peer,
     # actual listener and Host must all be local. Never infer locality from Host.
     server = request.scope.get("server")
@@ -123,11 +137,14 @@ def _guard(request: Request, stage: _Stage | None):
         for h in request.headers
     ):
         raise HTTPException(403, "Private loopback listener required")
-    if request.query_params or any(
+    is_queue = request.method == "GET" and request.scope["path"] == f"{PREFIX}/queue"
+    if (request.query_params and not is_queue) or any(
         h in request.headers
         for h in ("x-dev-identity", "x-tenant-id", "x-bri-tenant-context")
     ):
         raise HTTPException(400, "Authority is server-controlled")
+    if is_queue:
+        queue_parameters(request.query_params.multi_items())
 
 
 def create_approval_router(*, principal_dependency: Callable) -> APIRouter:
@@ -149,23 +166,34 @@ def _router(principal_dependency, stage):
 
     principal_dep = Depends(principal_dependency)
 
-    def context(request: Request, principal: Principal = principal_dep):
+    def client_admin(request: Request, principal: Principal, *, step_up: bool):
         ident = getattr(request.state, "authenticated_identity", None)
-        if not has_recent_mfa(ident):
+        if step_up and not has_recent_mfa(ident):
             request.state.audit_phase = "mfa"
             raise HTTPException(403, "Eligible client administrator and verified step-up required")
         request.state.audit_phase = "authority"
         if (
-            principal.platform_superadmin
+            not isinstance(ident, AuthenticatedIdentity)
+            or principal.platform_superadmin
             or len(principal.tenant_ids) != 1
         ):
             raise HTTPException(
                 403, "Eligible client administrator and verified step-up required"
+                if step_up else "Eligible client administrator required"
             )
         tenant = next(iter(principal.tenant_ids))
         if principal.role_bindings != ((tenant, "admin"),):
             raise HTTPException(403, "Eligible client administrator required")
         return ApprovalContext(tenant, ident, UUID(request.state.request_id)), principal
+
+    def context(request: Request, principal: Principal = principal_dep):
+        return client_admin(request, principal, step_up=True)
+
+    def reader_for(ctx: ApprovalContext, principal: Principal) -> AdministrationReader:
+        return AdministrationReader(stage.registry, ctx.tenant_id, principal.subject_id, ctx.identity)
+
+    def reader(request: Request, principal: Principal = principal_dep):
+        return reader_for(*client_admin(request, principal, step_up=False))
 
     def require(bound, *permissions):
         ctx, principal = bound
@@ -177,10 +205,30 @@ def _router(principal_dependency, stage):
         return ctx  # SQL additionally checks the pinned root scope, person and vote.
 
     context_dep = Depends(context)
+    reader_dep = Depends(reader)
+
+    @router.get("/queue", response_model=QueuePage)
+    def queue(request: Request, read: AdministrationReader = reader_dep):
+        limit, cursor = queue_parameters(request.query_params.multi_items())
+        rows = read.queue(limit, cursor=cursor)
+        return QueuePage(items=rows[:limit], next_cursor=rows[limit - 1].approval_id if len(rows) > limit else None)
+
+    @router.get("/queue/{approval_id}", response_model=QueueItem)
+    def queue_item(approval_id: UUID, read: AdministrationReader = reader_dep):
+        rows = read.queue(1, item=approval_id)
+        if not rows:
+            raise HTTPException(404, "Not Found")
+        return rows[0]
+
+    @router.get("/eligibility/{target_id}", response_model=Eligibility)
+    def eligibility(target_id: UUID, read: AdministrationReader = reader_dep):
+        return read.eligibility(target_id)
 
     @router.post("", response_model=ApprovalReply)
     def create(body: CreateApproval, bound=context_dep):
         ctx = require(bound, "user:mfa_reset:request")
+        if stage.mfa_reset_administration:
+            reader_for(*bound).require_visible_target(body.target)
         state = stage.repo.request(
             ctx, target=body.target, reason=body.reason, request_id=body.request_id
         )
@@ -191,18 +239,26 @@ def _router(principal_dependency, stage):
     @router.post("/{approval_id}/decision", response_model=ApprovalReply)
     def decide(approval_id: UUID, body: DecideApproval, bound=context_dep):
         ctx = require(bound, "user:mfa_reset:decide")
+        if stage.mfa_reset_administration and not reader_for(*bound).queue(1, item=approval_id):
+            # A visible projection is required, not a true can_decide hint.
+            # A10 still owns replay, expiry and distinct-person enforcement.
+            raise PermissionError("Approval denied")
         state = stage.repo.decide(ctx, approval_id, body.decision)
         return ApprovalReply(
             approval_id=approval_id, state=state, correlation_id=ctx.correlation_id
         )
 
-    @router.get("/{approval_id}", response_model=ApprovalReply)
     def status(approval_id: UUID, bound=context_dep):
         ctx = require(bound, "user:mfa_reset:request", "user:mfa_reset:decide")
         state = stage.repo.status(ctx, approval_id)
         return ApprovalReply(
             approval_id=approval_id, state=state, correlation_id=ctx.correlation_id
         )
+
+    # A10 status can persist expiry. A11.8 exposes only the read-only queue;
+    # keep the normal router's stage-guard denial and legacy harness behavior.
+    if stage is None or not stage.mfa_reset_administration:
+        router.add_api_route("/{approval_id}", status, methods=["GET"], response_model=ApprovalReply)
 
     return router
 
@@ -216,11 +272,14 @@ def create_staged_approval_app(
     factor_transport: httpx.MockTransport,
     dbname: str = "postgres",
     port: int = 5432,
+    mfa_reset_administration: bool = False,
 ) -> FastAPI:
     """Build an isolated loopback harness. No supplied URLs, tokens, env flags or real transports.
 
     ``app.state.approval_worker.execute(verified_reviewer_context, approval_id)`` is server-only.
     Recording/replaying an APPROVE over HTTP never dispatches provider work.
+    Enable ``mfa_reset_administration`` for the private A11.8 UI to require
+    directory and queue visibility in addition to A10's unmodified checks.
     """
     socket = Path(private_socket).resolve(strict=True)
     st = socket.stat()
@@ -258,9 +317,10 @@ def create_staged_approval_app(
         def _connect(self):
             return app_db()
 
-    registry = LocalIdentityDatabase("", "")
+    auth_origin = f"https://{EXPECTED_PROJECT_REF}.supabase.co"
+    registry = LocalIdentityDatabase(auth_origin, "")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    stage = _Stage(app, ApprovalRepository(app_db))
+    stage = _Stage(app, ApprovalRepository(app_db), registry, mfa_reset_administration)
     app.state.approval_worker = ApprovalWorker(
         restricted(worker_scope, "bri_approval_worker"),
         ReconciliationMfaAdmin(test_transport=factor_transport),
@@ -277,11 +337,12 @@ def create_staged_approval_app(
             # The outer transport guard runs before routing or body parsing.
             for route in router.routes:
                 if isinstance(route, APIRoute) and route.matches(request.scope)[0] is Match.FULL:
-                    mark(request, _ACTION[route.name], "authority")
+                    if route.name in _ACTION:
+                        mark(request, _ACTION[route.name], "authority")
                     break
             response = JSONResponse({"detail": err.detail}, status_code=err.status_code)
         except Exception:  # Never expose transport or repository details.
-            if not getattr(request.state, "audit_action", None):
+            if not (getattr(request.state, "audit_action", None) or getattr(request.state, "approval_read", False)):
                 raise
             response = JSONResponse({"detail": "Approval service unavailable"}, status_code=503)
         response = await audit_denial(request, response, registry)
@@ -303,7 +364,7 @@ def create_staged_approval_app(
             transport=auth_transport, trust_env=False
         ) as client:
             verifier = SupabaseTokenVerifier(
-                f"https://{EXPECTED_PROJECT_REF}.supabase.co",
+                auth_origin,
                 "stage-only",
                 client=client,
             )

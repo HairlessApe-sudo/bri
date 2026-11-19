@@ -1072,3 +1072,83 @@ test('directory client and Next handler read list, detail, history and grants th
   assert.equal(result.status, 502);
   assert.doesNotMatch(await result.text(), /hidden_count|private opaque role/);
 });
+
+test('staged approval detail shows eligibility only for an active User and gates a bounded form', async () => {
+  const { StagedApprovalDetail, ApprovalRequestPanel } = await import('../src/components/privileged-approvals.tsx');
+  const unused = () => assert.fail('No transport or step-up during render');
+  const active = { ...user, status: 'active', role: 'user' };
+  const props = { data: active, onBack: unused, transport: unused, stepUp: unused };
+  const markup = render(StagedApprovalDetail, props);
+  assert.match(markup, /User details/);
+  assert.match(markup, /Check MFA reset eligibility/);
+  assert.doesNotMatch(markup, /<form|<select|This detail is read-only/);
+  for (const data of [{ ...active, status: 'suspended' }, user, { ...active, role: 'superuser' }]) {
+    assert.doesNotMatch(render(StagedApprovalDetail, { ...props, data }), /MFA reset|Check.*eligibility/);
+  }
+  const view = { phase: 'ready', eligible: true, reason: 'LOST_FACTOR', retry: false };
+  const form = render(ApprovalRequestPanel, { view, flow: {} });
+  assert.deepEqual([...form.matchAll(/<option value="([A-Z_]+)"/g)].map((m) => m[1]), ['LOST_FACTOR', 'REPLACED_DEVICE', 'COMPROMISED_FACTOR']);
+  assert.match(form, /type="submit"[^>]*>Submit MFA reset request/);
+  assert.doesNotMatch(render(ApprovalRequestPanel, { view: { ...view, eligible: false }, flow: {} }), /<form|<select/);
+});
+
+test('staged approval queue displays bounded outcome labels without execution controls', async () => {
+  const { ApprovalQueuePanel, StagedApprovalQueue } = await import('../src/components/privileged-approvals.tsx');
+  const unused = () => assert.fail('No transport or step-up during render');
+  assert.match(render(StagedApprovalQueue, { transport: unused, stepUp: unused }), /Load approval queue/);
+  const states = ['PENDING', 'APPROVED', 'EXECUTING', 'COMPLETED', 'REJECTED', 'EXPIRED', 'FAILED'];
+  const reconciliations = ['NONE', 'PENDING', 'UNRESOLVED', 'SAFE_HANDOFF', 'VERIFIED_ABSENT'];
+  const items = states.map((state, i) => ({ approval_id: id.slice(0, -1) + i, target_id: id, target_name: '<User fixture>',
+    requester_label: 'Restricted requester', reason: 'LOST_FACTOR', state, reconciliation: reconciliations[i % 5], can_decide: true,
+    requested_at: '2026-11-19T10:00:00Z', expires_at: '2026-11-19T11:00:00Z', provider_id: 'private fixture' }));
+  const view = { phase: 'ready', pageNumber: 1, page: { items, next_cursor: null } };
+  const html = render(ApprovalQueuePanel, { view, flow: {} });
+  for (const label of ['Awaiting approval', 'Approved — execution not confirmed', 'Execution in progress', 'MFA factor removal confirmed',
+    'Rejected', 'Expired', 'Execution failed', 'No reconciliation reported', 'Reconciliation pending', 'Reconciliation unresolved',
+    'Safe handoff recorded', 'Factor absence verified', 'Restricted requester', '&lt;User fixture&gt;']) assert.ok(html.includes(label), label);
+  assert.equal((html.match(/>Approve<\/button>/g) ?? []).length, 1);
+  assert.equal((html.match(/>Reject<\/button>/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /private fixture|<(?:User fixture)|>(?:Execute|Restore|Recover)<\/button>/);
+  assert.match(html, /does not confirm re-enrollment or restored access/);
+});
+
+test('release approval paths are rejected in hosted and synthetic modes before auth or fetching', async (t) => {
+  const { NextRequest } = await import('next/server');
+  const { proxy } = await import('../src/proxy.ts');
+  const { DirectoryDetailContent, UserDirectory } = await import('../src/components/user-directory.tsx');
+  const unused = () => assert.fail('No approval auth client or upstream fetch');
+  t.mock.method(globalThis, 'fetch', unused);
+  globalThis.directoryTestSession = unused;
+  globalThis.directoryTestMiddlewareAuth = unused;
+  const keys = ['BRI_UI_AUTH_MODE', 'BRI_API_ORIGIN', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'];
+  const original = keys.map((key) => process.env[key]);
+  t.after(() => {
+    keys.forEach((key, i) => { if (original[i] === undefined) delete process.env[key]; else process.env[key] = original[i]; });
+    delete globalThis.directoryTestSession;
+    delete globalThis.directoryTestMiddlewareAuth;
+  });
+  process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://auth.example.test';
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = 'fixture-key';
+  for (const mode of ['supabase', 'synthetic']) {
+    process.env.BRI_UI_AUTH_MODE = mode;
+    process.env.BRI_API_ORIGIN = mode === 'supabase' ? 'https://api.example.test' : 'http://127.0.0.1:8000';
+    const prefix = 'v1/privileged-approvals';
+    for (const [method, path, query] of [
+      ['GET', prefix + '/queue', '?limit=25&cursor=opaque'], ['GET', `${prefix}/queue/${id}`],
+      ['GET', `${prefix}/eligibility/${id}`], ['GET', `${prefix}/${id}`],
+      ['POST', prefix], ['POST', `${prefix}/${id}/decision`], ['POST', `${prefix}/${id}/execute`],
+      ['GET', 'v1/%70rivileged-approvals/queue'],
+    ]) {
+      const req = new NextRequest(`https://ui.example.test/api/bri/${path}${query ?? ''}`, { method });
+      const middleware = await proxy(req);
+      assert.equal(middleware.headers.get('x-middleware-next'), '1');
+      const result = await route[method](req, { params: Promise.resolve({ path: path.split('/').map(decodeURIComponent) }) });
+      assert.equal(result.status, 404, `${mode} ${method} ${path}`);
+    }
+  }
+  const data = { ...user, status: 'active', role: 'user' };
+  for (const html of [render(DirectoryDetailContent, { accountId: id, data, onBack: unused }),
+    render(UserDirectory, { enabled: true }), render(UserDirectory, { enabled: false })]) {
+    assert.doesNotMatch(html, /MFA reset|Approval queue|LOST_FACTOR|>Approve<|>Reject</i);
+  }
+});

@@ -39,6 +39,12 @@ Owner-approved subdivision: a read-only view on ordinary User and SuperUser deta
 
 Separate recorded assignments from effective scope grants. Suspended/deactivated accounts have no effective grants; revoked/retired assignments do not appear as active. Preserve independent knowledge record/version decisions, indistinguishable target not-found behavior and forced RLS. Use two synthetic tenants and the restricted runtime role for integration tests; include directory/history regressions and independent review. No seeded authority, grant mutations, delegation changes, deployment, A11.8 or Data Disposition work.
 
+## A11.8 — MFA reset request and review
+
+Owner-approved subdivision of A11: stage an MFA reset form for eligible active native Users, a bounded read-only queue, and approve/reject controls that reuse A10. Requesters see only their own authorized requests; reviewer-wide access requires existing decision authority, independent target visibility, and unseeded `account:mfa-reset:queue:read`. Mask peer-Admin identities. Show request and execution states separately; approval is not factor removal, completed recovery, or restored access. Queue reads never persist expiry or write audit records.
+
+Keep A10's two distinct eligible Admins, explicit action grants, verified 15-minute TOTP freshness, 24-hour expiry, idempotency, concurrency controls, immutable audit, and separate execution/reconciliation. Correct unsafe approval SQL access only by narrowly removing the staged-only routines from the runtime login; do not add a hosted execution architecture. Verify on disposable PostgreSQL 16 with two synthetic tenants, the restricted role, and independent review. No provisioning queue, live provider, hosted mutations, deployment, A11.9, or Data Disposition.
+
 ## Boundaries for both assignments
 
 Additive checksummed migrations only. No production authentication, hosted administration/configuration writes, public signup, real customer provisioning/data, shared migration, provider setting changes, deployment or push. Use synthetic fixtures and disposable PostgreSQL. Record test results and any externally blocked gate explicitly. No emergency bypass, no modification of prior migration files.
