@@ -36,6 +36,18 @@ Candidate architecture: full-text + vector/hybrid retrieval with tenant, collect
 
 Indexes store source/version/location and index-generation identifiers and can be rebuilt. Access changes, supersession and deletion trigger reindex/invalidation or read-time revalidation. Provider/model/dimension changes require versioned re-embedding; do not mix vector spaces silently.
 
+### Implemented: A11.4-P1 current read authorization
+
+A logical knowledge record uses the existing tenant-qualified `source_id`; a version uses that record and its `source_version_id`. The public `record_id` still identifies a specific validated proposal, linked to one exact version through immutable extraction provenance. Multiple publications of a version share its version restriction.
+
+Migration `0020_knowledge_read_authorization.sql` adds independent, tenant-scoped record and version decisions. Only an explicit `readable=true` in **both** tables permits a published version to be considered for display. `false` or a missing decision denies it. Use a version denial when that version is withdrawn, restricted, or superseded and no longer authorized; a record denial restricts every version independently of their individual decisions. The system does not infer supersession from labels, timestamps, or the existence of a newer version. The migration creates no allow rows, and validation does not create an allow decision. Existing publications and provenance are retained; legacy and new content without explicit decisions stay unavailable to readers until reviewed and enabled through the database maintenance boundary. There is no hosted policy-writing or classification-management API.
+
+List, detail, search and source references share `read_authorized_knowledge` in `src/bri/api/app.py`. It loads approved publications through a server-verified tenant read transaction, matches the exact `knowledge:read` node, and joins both current decisions before returning content or provenance. API knowledge responses are not cacheable. Revocation applies to reads using a database snapshot taken after the policy transaction commits; it cannot recall data already delivered or stop a read that is already using an earlier snapshot. The existing separately authorized exact-node proposal/review workflow can still show pending source extraction text and provenance. A published denial is not a source-wide embargo, and review alone grants no published-read access.
+
+Migration `0020` adds the policy state; the updated reader enforces it. A future rollout must not serve pre-P1 knowledge handlers while relying on these decisions. If rolling back the reader, disable the four published read endpoints rather than serving them through handlers that ignore current policy.
+
+Future search indexes, AI retrieval and exports must treat indexed IDs as candidates only; hydrate evidence and provenance through this same current decision boundary using the verified request identity before scoring, passing content to a model, or serializing it. They must not serve cached text, stale snippets, or an earlier authorization result after access changes. No index, AI retrieval or export was added in this prerequisite.
+
 ## 6. Extraction and format limits
 
 Product direction includes CSV, Excel and PDF. Define a format capability matrix: tables/layout, formulas, hidden sheets, scanned PDFs, language/OCR, page/row/cell source locations, encrypted/password-protected files, macros and malformed inputs. The proposed MVP should state whether PDF means text-based extraction only; OCR remains uncommitted until technology, languages, quality and security are approved.

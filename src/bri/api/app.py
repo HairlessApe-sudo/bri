@@ -407,7 +407,15 @@ def _authorized_scopes(principal: Principal, action: str) -> tuple[str, ...]:
     }))
 
 
-def _validated_items(session: TenantSession, principal: Principal) -> tuple[KnowledgeItem, ...]:
+def read_authorized_knowledge(session: TenantSession, principal: Principal) -> tuple[KnowledgeItem, ...]:
+    """Load current evidence for a server-verified read transaction.
+
+    Search, exports and AI consumers must hydrate from this boundary, never
+    from index excerpts or cached authorization. Missing policy means deny.
+    """
+    tenant_id = session.tenant_id
+    if not tenant_id or principal.tenant_ids != frozenset({tenant_id}):
+        return ()
     scopes = _authorized_scopes(principal, "knowledge:read")
     if not scopes:
         return ()
@@ -415,18 +423,18 @@ def _validated_items(session: TenantSession, principal: Principal) -> tuple[Know
         _PROPOSAL_SELECT
         + " JOIN bri.validated_knowledge v "
         "ON v.tenant_id=p.tenant_id AND v.proposal_id=p.proposal_id "
+        "JOIN bri.knowledge_record_access kr "
+        "ON kr.tenant_id=s.tenant_id AND kr.source_id=s.source_id AND kr.readable IS TRUE "
+        "JOIN bri.knowledge_version_access kv "
+        "ON kv.tenant_id=sv.tenant_id AND kv.source_id=sv.source_id "
+        "AND kv.source_version_id=sv.source_version_id AND kv.readable IS TRUE "
         "WHERE p.tenant_id=%s AND p.scope_node_id = ANY(%s) "
         "ORDER BY p.proposed_at, p.proposal_id",
-        (next(iter(principal.tenant_ids)), list(scopes)),
+        (tenant_id, list(scopes)),
     ).fetchall()
     return tuple(
-        item for row in rows
-        if is_authorized(
-            principal,
-            "knowledge:read",
-            Resource(row[1], row[2]),
-        )
-        for item in (_knowledge_item(row),)
+        _knowledge_item(row) for row in rows
+        if is_authorized(principal, "knowledge:read", Resource(row[1], row[2]))
     )
 
 
@@ -576,6 +584,8 @@ def create_app(
             response = await audit_denial(request, response, active_database)
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers["X-Request-ID"] = request_id
+        if request.url.path == "/v1/knowledge" or request.url.path.startswith(("/v1/knowledge/", "/v1/sources/")):
+            response.headers["Cache-Control"] = "private, no-store"
         _REQUEST_LOG.info(
             "request_completed request_id=%s method=%s status=%s duration_ms=%.1f",
             request_id,
@@ -922,7 +932,7 @@ def create_app(
         session: TenantSession = Depends(tenant_session),
     ) -> list[KnowledgeRecordResponse]:
         require_permission(principal, "knowledge:read")
-        return [_record_response(item) for item in _validated_items(session, principal)]
+        return [_record_response(item) for item in read_authorized_knowledge(session, principal)]
 
     @app.get(
         "/v1/knowledge/proposals",
@@ -1089,7 +1099,7 @@ def create_app(
         session: TenantSession = Depends(tenant_session),
     ) -> KnowledgeSearchResponse:
         require_permission(principal, "knowledge:read")
-        result = answer_question(principal, q, _validated_items(session, principal))
+        result = answer_question(principal, q, read_authorized_knowledge(session, principal))
         return KnowledgeSearchResponse(
             status=result.status,
             answer=result.answer,
@@ -1108,7 +1118,7 @@ def create_app(
         session: TenantSession = Depends(tenant_session),
     ) -> KnowledgeRecordResponse:
         require_permission(principal, "knowledge:read")
-        for item in _validated_items(session, principal):
+        for item in read_authorized_knowledge(session, principal):
             if item.record_id == record_id:
                 return _record_response(item)
         raise HTTPException(status_code=404, detail="Knowledge record not found")
@@ -1125,7 +1135,7 @@ def create_app(
         session: TenantSession = Depends(tenant_session),
     ) -> SourceReferenceResponse:
         require_permission(principal, "knowledge:read")
-        for item in _validated_items(session, principal):
+        for item in read_authorized_knowledge(session, principal):
             if item.record_id == record_id:
                 return SourceReferenceResponse(
                     record_id=item.record_id,

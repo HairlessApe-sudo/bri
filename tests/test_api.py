@@ -167,6 +167,8 @@ class FakeKnowledgeConnection:
         self.proposals: dict[tuple[str, str], tuple] = {}
         self.decisions: dict[tuple[str, str], tuple] = {}
         self.validated: set[tuple[str, str]] = set()
+        self.readable_records = {(tenant, source[2]) for (tenant, _), source in self.sources.items()}
+        self.readable_versions = {(tenant, source[2], source[3]) for (tenant, _), source in self.sources.items()}
 
     def execute(self, query: str, params=()) -> FakeResult:
         normalized = " ".join(query.split())
@@ -199,6 +201,8 @@ class FakeKnowledgeConnection:
             return FakeResult([
                 row for key, row in self.proposals.items()
                 if key[0] == tenant_id and key in self.validated and row[2] in scopes
+                and ("bri.knowledge_record_access" not in normalized or (tenant_id, row[6]) in self.readable_records)
+                and ("bri.knowledge_version_access" not in normalized or (tenant_id, row[6], row[7]) in self.readable_versions)
             ])
         if "LEFT JOIN bri.validation_decisions d" in normalized:
             tenant_id, scopes = params
@@ -546,6 +550,50 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(answer["citations"][0]["record_id"], proposal_id)
         self.assertEqual(answer["citations"][0]["source_version_id"], record_json["source_version_id"])
         self.assertEqual(answer["citations"][0]["content_sha256"], record_json["content_sha256"])
+
+    def test_validated_knowledge_requires_current_record_and_version_access(self) -> None:
+        client, app, connection = self.knowledge_client()
+        reader = {"X-Dev-Identity": "user-noordlicht-reader"}
+        created = client.post(
+            "/v1/knowledge/proposals", headers={"X-Dev-Identity": "user-noordlicht-proposer"},
+            json={"extraction_id": "extract-synth-noordlicht-retention-v1"},
+        )
+        self.assertEqual(created.status_code, 201)
+        record_id = created.json()["proposal_id"]
+        detail = f"/v1/knowledge/{record_id}"
+        source = f"/v1/sources/{record_id}"
+        decision = client.post(f"/v1/knowledge/proposals/{record_id}/decision",
+                               headers={"X-Dev-Identity": "user-noordlicht-reviewer"},
+                               json={"decision": "approved"})
+        self.assertEqual(decision.status_code, 200)
+        query = {"q": "How many years must employee files be retained?"}
+        self.assertEqual(client.get(detail, headers=reader).status_code, 200)
+        self.assertEqual(client.get("/v1/knowledge/search", params=query, headers=reader).json()["status"], "supported")
+        for layer in ("readable_records", "readable_versions"):
+            with self.subTest(layer=layer):
+                policies = getattr(connection, layer)
+                original = policies.copy()
+                policies.clear()
+                try:
+                    self.assertEqual(client.get(detail, headers=reader).status_code, 404)
+                    self.assertEqual(client.get(source, headers=reader).status_code, 404)
+                    self.assertEqual(client.get("/v1/knowledge", headers=reader).json(), [])
+                    self.assertEqual(client.get("/v1/knowledge/search", params=query, headers=reader).json(),
+                                     {"status": "insufficient", "answer": None, "citations": []})
+                finally:
+                    policies.update(original)
+        self.assertEqual(client.get(source, headers=reader).headers["cache-control"], "private, no-store")
+        reviewer_id = "user-noordlicht-reviewer"
+        existing = app.state.catalog.principals[reviewer_id]
+        review_grants = tuple(grant for grant in existing.grants if grant.action == "knowledge:review")
+        self.assertTrue(review_grants)
+        app.state.catalog.principals[reviewer_id] = replace(existing, grants=review_grants)
+        reviewer = {"X-Dev-Identity": reviewer_id}
+        self.assertEqual(client.get("/v1/knowledge/proposals", headers=reviewer).status_code, 200)
+        for path, params in ((detail, {}), (source, {}), ("/v1/knowledge", {}),
+                             ("/v1/knowledge/search", query)):
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path, headers=reviewer, params=params).status_code, 403)
 
     def test_rejected_proposals_are_terminal_and_never_searchable(self) -> None:
         client, _, _ = self.knowledge_client()

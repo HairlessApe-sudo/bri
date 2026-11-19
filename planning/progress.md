@@ -3,6 +3,16 @@
 Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A11.4-P1 — Current knowledge record and version authorization (2026-11-19)
+
+- Migration `0020_knowledge_read_authorization.sql` adds independent record and version access policies under forced tenant RLS. A missing or denied decision at either layer overrides exact node access; existing validation and provenance are unchanged. No legacy publication is automatically made readable.
+- The knowledge list, detail, search and source-reference readers resolve current policy before returning content or provenance. The [knowledge architecture](../architecture/knowledge-architecture.md#implemented-a114-p1-current-read-authorization) documents the shared contract for future AI retrieval, indexes and exports. There is no hosted policy writer.
+- Local verification: 67 focused backend and verifier-guard checks, 9 knowledge integration tests with two synthetic tenants and the restricted application role, and 18 disposable database regression tests. All passed with no skips. All 20 migration checksums and no-op replay passed; the restricted-role catalog confirmed forced RLS on all 49 non-ledger tables.
+
+## A11.4 — Controlled permission delegation: not resumed (2026-11-19)
+
+The owner approved both documented disclosure surfaces, conditional on current tenant, organisational, resource and classification authorization. The [original authorization review](../architecture/permission-delegation.md) identified the record/version gap addressed separately by A11.4-P1. Neither permission was enabled for delegation. Legacy role-catalog hardening and the other delegation prerequisites remain outstanding.
+
 ## A11.3 — Ordinary-user lifecycle management (2026-11-19)
 
 - Added staged display-name editing, suspension and reactivation for same-tenant Users and SuperUsers. Each action has a distinct tenant-root permission; lifecycle actions require fresh verified TOTP and an allowlisted reason. Detail controls require confirmation and use the committed version, with explicit refresh after a conflict.
