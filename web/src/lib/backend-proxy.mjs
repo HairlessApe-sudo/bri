@@ -1,4 +1,4 @@
-import { DIRECTORY_MAX_OFFSET, DIRECTORY_MAX_QUERY, isDirectoryUserId } from './user-directory.mjs';
+import { DIRECTORY_MAX_OFFSET, DIRECTORY_MAX_QUERY, isDirectoryUserId, isHistoryCursor } from './user-directory.mjs';
 
 export class BackendRequestError extends Error {
   constructor(message, status) {
@@ -65,8 +65,10 @@ export function resolveUiAuthMode(env = process.env) {
 function validateBackendTarget(path, searchParams, mode, method) {
   const normalized = `/${String(path).replace(/^\/+|\/+$/g, '')}`;
   const directory = normalized === DIRECTORY_LIST || normalized.startsWith(`${DIRECTORY_LIST}/`);
+  const userPath = normalized.slice(DIRECTORY_LIST.length + 1);
+  const history = directory && userPath.endsWith('/history') && isDirectoryUserId(userPath.slice(0, -'/history'.length));
   const isDirectoryRead = directory && mode === 'supabase' && path === normalized
-    && (normalized === DIRECTORY_LIST || isDirectoryUserId(normalized.slice(DIRECTORY_LIST.length + 1)));
+    && (normalized === DIRECTORY_LIST || isDirectoryUserId(userPath) || history);
   const isRead = method === 'GET' && (isDirectoryRead || READ_ROUTES.some((route) => route.test(normalized)));
   const isSessionAction = normalized === '/v1/auth/session' && ['POST', 'DELETE'].includes(method);
   const isRecovery = normalized === '/v1/auth/recovery/invalidate' && method === 'POST';
@@ -80,12 +82,15 @@ function validateBackendTarget(path, searchParams, mode, method) {
   const params = new URLSearchParams();
   for (const [key, value] of searchParams.entries()) {
     const allowed = normalized === DIRECTORY_LIST ? ['q', 'limit', 'offset'].includes(key)
-      : normalized === '/v1/knowledge/search' && key === 'q';
+      : history ? ['limit', 'cursor'].includes(key) : normalized === '/v1/knowledge/search' && key === 'q';
     if (!allowed) {
       throw new BackendRequestError('Unsupported query parameter', 400);
     }
     if (params.has(key)) throw new BackendRequestError('Duplicate query parameter', 400);
-    if (normalized === DIRECTORY_LIST) {
+    if (history && key === 'cursor' && !isHistoryCursor(value)) {
+      throw new BackendRequestError('Invalid history pagination parameter', 400);
+    }
+    if (normalized === DIRECTORY_LIST || (history && key === 'limit')) {
       if (key === 'q') {
         if ([...value].length > DIRECTORY_MAX_QUERY || value.includes('\0')) {
           throw new BackendRequestError('Invalid directory query', 400);
@@ -104,7 +109,7 @@ function validateBackendTarget(path, searchParams, mode, method) {
   }
   if (isSessionAction && params.size) throw new BackendRequestError('Session routes do not accept query parameters', 400);
 
-  return { normalized, params, directory };
+  return { normalized, params, directory, history };
 }
 
 function makeBackendRequest({ normalized, params }, env, mode, accessToken) {
@@ -157,7 +162,10 @@ export function assertSameOriginMutation(requestUrl, originHeader) {
 export async function prepareProxyRequest(request, path, env, readSessionToken) {
   const method = request.method.toUpperCase();
   const mode = resolveUiAuthMode(env);
-  const target = validateBackendTarget(path, new URL(request.url).searchParams, mode, method);
+  const { pathname, searchParams } = new URL(request.url);
+  const target = validateBackendTarget(path, searchParams, mode, method);
+  // Catch-all params are decoded. Do not let a path alias reach the history API.
+  if (target.history && pathname !== `/api/bri${path}`) throw new BackendRequestError('Not found', 404);
   let accessToken;
   if (mode === 'supabase') {
     assertNoSpoofedIdentityHeaders(request.headers);

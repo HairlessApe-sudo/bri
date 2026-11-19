@@ -3,6 +3,11 @@
 Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A11.6 — Read-only account administration history (2026-11-19)
+
+- Added `GET /v1/users/{id}/history` and a cursor-paged panel on ordinary account detail. A verified, authorized client Admin needs both the existing directory permission and an explicit `account:history:read` grant. The database independently checks target and actor visibility, and returns a projection of existing allowlisted audit events only. Migration `0024_account_history.sql` removes legacy raw audit reads from the runtime role without changing audit writes or immutable records. See [the history boundary](../architecture/account-history.md).
+- Verified locally: 480 backend tests and 77 web tests passed with no failures or skips; TypeScript and the optimized build passed. The backend run included the history HTTP and two-tenant disposable PostgreSQL tests; all 24 checksums and no-op replay passed, and 52 non-ledger tables retain forced RLS. No hosted mutations or Data Disposition work was added.
+
 ## A11.5 — Ordinary account deactivation (2026-11-19)
 
 - Added a local-only BRI deactivation transition for same-tenant ordinary Users and SuperUsers. The [deactivation boundary](../architecture/user-deactivation.md) is separate from A11.3 suspension, deletion requests and future restoration. Migration `0022_user_account_deactivation.sql` retires active assignments without deleting them, clears delegated grant state, revokes BRI sessions, and records immutable audit in one transaction. No permissions are seeded. The release API, proxy and database routine ACL keep hosted deactivation disabled.

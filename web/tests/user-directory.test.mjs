@@ -207,6 +207,84 @@ test('directory distinguishes loading, authentication, denied, missing user, and
   }
 });
 
+const historyItem = {
+  id, occurred_at: '2026-11-19T10:20:30.123456Z', action: 'provisioned', outcome: 'requested', reason_code: null,
+  actor: { id: null, display_name: 'Restricted actor' },
+};
+const otherId = '00000000-0000-4000-8000-000000000099';
+
+test('ordinary account detail mounts history only for a matching successful account response', async () => {
+  const { DirectoryDetailContent } = await import('../src/components/user-directory.tsx');
+  const props = { accountId: id, onBack() {}, data: user };
+  assert.match(render(DirectoryDetailContent, props), /Account history[^]*Loading/);
+  for (const state of [{ loading: true }, { error: new Error() }, { data: null }, { data: { ...user, id: otherId } }]) {
+    assert.doesNotMatch(render(DirectoryDetailContent, { ...props, ...state }), /Account history/);
+  }
+});
+
+test('history shows action labels, redacted actor and separate safe loading, empty, missing and denied states', async () => {
+  const { HistoryPageView } = await import('../src/components/user-history.tsx');
+  const { parseHistoryPage } = await import('../src/lib/user-history.ts');
+  const items = [{ ...historyItem, actor: { id: null, display_name: 'Hidden actor name' } },
+    { ...historyItem, id: otherId, action: 'activated', outcome: 'success',
+    reason_code: 'review_complete', actor: { id: otherId, display_name: 'Fixture administrator' } }];
+  const ready = { phase: 'ready', page: parseHistoryPage({ items, next_cursor: otherId }) };
+  const show = (state) => render(HistoryPageView, { state, cursor: null });
+  const html = show(ready);
+  assert.match(html, /Provisioning requested[^]*Restricted actor[^]*Account activated[^]*Fixture administrator/);
+  assert.match(html, /Review complete/);
+  assert.match(html, /<time dateTime="2026-11-19T10:20:30.123456Z"/);
+  assert.match(html, />Older events<\/button>/);
+  assert.doesNotMatch(html, /Hidden actor name|00000000|<form|<input/);
+  for (const [phase, text] of [['loading', 'Loading'], ['denied', 'Access denied'], ['unauthenticated', 'Verified session required'],
+    ['missing', 'History not found'], ['error', 'Could not load account history']]) {
+    const output = show({ ...ready, phase, error: new Error('private upstream detail') });
+    assert.ok(output.includes(text));
+    assert.doesNotMatch(output, /Provisioning requested|private upstream detail|Older events/);
+  }
+  assert.match(show({ phase: 'ready', page: parseHistoryPage({ items: [], next_cursor: null }) }), /No account history events/);
+  assert.doesNotMatch(render(HistoryPageView, { state: ready, cursor: otherId }), /Older events/);
+});
+
+test('history requests bound pages to the selected account and drop late results after a switch', async (t) => {
+  const { requestHistoryPage } = await import('../src/lib/user-history.ts');
+  const old = Promise.withResolvers();
+  const current = Promise.withResolvers();
+  const fetch = t.mock.method(globalThis, 'fetch', (path) => path.includes(`/${id}/`) ? old.promise
+    : Promise.resolve(Response.json({ items: [], next_cursor: null })));
+  const stop = requestHistoryPage(id, null, () => assert.fail('Late history update from old account'));
+  requestHistoryPage(otherId, id, current.resolve);
+  stop();
+  old.resolve(Response.json({ items: [historyItem], next_cursor: null }));
+  assert.deepEqual(await current.promise, { phase: 'ready', page: { items: [], next_cursor: null } });
+  await new Promise(setImmediate);
+  const calls = fetch.mock.calls.map(({ arguments: [path, options] }) => [path, options]);
+  assert.deepEqual(calls.map(([path]) => path), [`${listPath}/${id}/history?limit=25`, `${listPath}/${otherId}/history?limit=25&cursor=${id}`]);
+  assert.equal(calls[0][1].signal.aborted, true);
+  for (const [, init] of calls) {
+    assert.equal(init.method ?? 'GET', 'GET');
+    assert.equal(init.cache, 'no-store');
+    assert.equal(init.body, undefined);
+  }
+});
+
+test('history rejects malformed pages and maps HTTP failures without upstream details', async (t) => {
+  const { requestHistoryPage, parseHistoryPage } = await import('../src/lib/user-history.ts');
+  for (const value of [null, {}, { items: Array(26).fill(historyItem), next_cursor: null }, { items: [], next_cursor: '/other' },
+    ...[{ occurred_at: 'invalid' }, { action: 'unknown' }, { outcome: 42 }, { reason_code: {} }, { actor: null }]
+      .map((patch) => ({ items: [{ ...historyItem, ...patch }], next_cursor: null }))]) {
+    assert.throws(() => parseHistoryPage(value));
+  }
+  let reply;
+  t.mock.method(globalThis, 'fetch', () => Promise.resolve(reply));
+  for (const [status, phase] of [[401, 'unauthenticated'], [403, 'denied'], [404, 'missing'], [500, 'error'], [200, 'error']]) {
+    reply = Response.json({ detail: 'sensitive upstream text' }, { status });
+    const state = Promise.withResolvers();
+    requestHistoryPage(id, null, state.resolve);
+    assert.deepEqual(await state.promise, { phase });
+  }
+});
+
 const lifecyclePath = `/v1/users/${id}/lifecycle`;
 const lifecycle = { id, display_name: 'Committed name', status: 'active', role: 'user', version: 3,
   can_edit: true, can_suspend: true, can_reactivate: false };
@@ -522,15 +600,16 @@ test('the staged detail offers exact nodes and only the two approved read permis
   }
 });
 
-test('Next dev request logging omits directory search and detail URLs', async () => {
+test('Next dev request logging omits directory search, detail and nested history URLs', async () => {
   const config = (await import('../next.config.ts')).default;
   const rules = config.logging?.incomingRequests?.ignore ?? [];
-  for (const url of [`${listPath}?q=private`, `${listPath}/${id}`, `/users?q=private`, `/api/bri/v1/%75sers/${id}`]) {
+  for (const url of [`${listPath}?q=private`, `${listPath}/${id}`, `/users?q=private`, `/api/bri/v1/%75sers/${id}`,
+    `${listPath}/${id}/history?limit=25&cursor=${id}`, `${listPath}/${id}/%68istory?cursor=${id}`]) {
     assert.ok(rules.some((rule) => rule.test(url)), `Missing logging exclusion for a directory URL`);
   }
 });
 
-test('the release Next handler denies staged user GETs without session or upstream and exports no PATCH', async (t) => {
+test('the release Next handler denies staged reads, history writes and synthetic history without session or upstream', async (t) => {
   const previousMode = process.env.BRI_UI_AUTH_MODE;
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = 'test';
@@ -551,6 +630,16 @@ test('the release Next handler denies staged user GETs without session or upstre
       const result = await route.GET(new Request(`https://ui.example.test${listPath}${suffix}`), {
         params: Promise.resolve({ path: ['v1', 'users', ...suffix.slice(1).split('/').map(decodeURIComponent)] }),
       });
+      assert.equal(result.status, 404);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+    }
+  }
+  const historyPath = ['v1', 'users', id, 'history'];
+  const historyUrl = `https://ui.example.test/api/bri/${historyPath.join('/')}`;
+  for (const mode of ['supabase', 'synthetic']) {
+    process.env.BRI_UI_AUTH_MODE = mode;
+    for (const method of mode === 'synthetic' ? ['GET', 'POST', 'DELETE'] : ['POST', 'DELETE']) {
+      const result = await route[method](new Request(historyUrl, { method }), { params: Promise.resolve({ path: historyPath }) });
       assert.equal(result.status, 404);
       assert.equal(result.headers.get('cache-control'), 'no-store');
     }
@@ -757,7 +846,7 @@ test('staged deactivation renders a distinct warning, bounded reasons and explic
   assert.doesNotMatch(renderPanel({ ...ready, phase: 'refresh-required' }), /<form|<select|Review deactivation/);
 });
 
-test('directory client and Next handler read list and detail through the same-origin boundary', async (t) => {
+test('directory client and Next handler read list, detail and history through the same-origin boundary', async (t) => {
   const previousMode = process.env.BRI_UI_AUTH_MODE;
   const previousOrigin = process.env.BRI_API_ORIGIN;
   process.env.BRI_UI_AUTH_MODE = 'supabase';
@@ -788,18 +877,25 @@ test('directory client and Next handler read list and detail through the same-or
     assert.equal(init.redirect, 'manual');
     assert.equal(init.cache, 'no-store');
     if (failureStatus) return Response.json({ detail: 'sensitive upstream text' }, { status: failureStatus });
+    if (input.includes('/history')) return Response.json({ items: [], next_cursor: null });
     const detail = input.endsWith(`/${id}`);
     return Response.json(detail ? { ...user, display_name: 'Detail fixture' } : { items: [user], has_more: true });
   });
   const page = await fetchApi(api.directoryListPath('A&B', 25));
   const detail = await fetchApi(api.directoryDetailPath(page.items[0].id));
+  const history = await fetchApi(`${listPath}/${id}/history?limit=25&cursor=${id}`);
   assert.deepEqual(page, { items: [user], has_more: true });
   assert.deepEqual(detail, { ...user, display_name: 'Detail fixture' });
-  assert.deepEqual(seen, [`https://api.example.test/v1/users?q=A%26B&offset=25`, `https://api.example.test/v1/users/${id}`]);
+  assert.deepEqual(history, { items: [], next_cursor: null });
+  assert.deepEqual(seen, [`https://api.example.test/v1/users?q=A%26B&offset=25`, `https://api.example.test/v1/users/${id}`,
+    `https://api.example.test/v1/users/${id}/history?limit=25&cursor=${id}`]);
   for (failureStatus of [401, 403, 404, 503]) {
-    const url = `https://ui.example.test${listPath}/${id}`;
-    const result = await route.GET(new Request(url), { params: Promise.resolve({ path: ['v1', 'users', id] }) });
-    assert.equal(result.status, failureStatus);
-    assert.doesNotMatch(await result.text(), /sensitive upstream text/);
+    for (const suffix of ['', '/history']) {
+      const url = `https://ui.example.test${listPath}/${id}${suffix}`;
+      const result = await route.GET(new Request(url), { params: Promise.resolve({ path: new URL(url).pathname.split('/').slice(3) }) });
+      assert.equal(result.status, failureStatus);
+      assert.match(result.headers.get('cache-control'), /no-store/);
+      assert.doesNotMatch(await result.text(), /sensitive upstream text/);
+    }
   }
 });

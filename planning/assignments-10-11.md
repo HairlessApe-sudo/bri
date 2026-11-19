@@ -27,6 +27,12 @@ Approved on 2026-11-19 as a new subdivision of A11, not an original standalone a
 
 Keep forced RLS, tenant isolation, the two-eligible-admin invariant and default-deny hosted boundaries. Verify the isolated workflow in two synthetic tenants under the restricted PostgreSQL role, including denial, concurrency, rollback, assignment and session retirement, preservation of history and suspension, and migration checksums/replay. No provider deletion, irreversible erasure, restoration, deletion-request processing, deployment or A11.6 work is authorized.
 
+## A11.6 — Read-only account administration history
+
+Approved on 2026-11-19 as a new subdivision of A11. An active verified same-tenant client Admin needs explicit `account:history:read` and independent authorization to view an ordinary target, including a deactivated one. Reuse existing immutable provisioning, activation, display-name, suspension/reactivation, grant/revocation and deactivation events, without backfilling or fabricating records. Return only the event ID, timestamp, stable action, outcome, approved reason code where recorded and independently authorized actor ID/name; otherwise show a neutral restricted-actor label. No raw audit, provider identity, credential, MFA or recovery details, or free-form notes.
+
+Provide a paginated GET and read-only panel. Preserve target not-found indistinguishability and forced RLS; verify under the restricted database role with two synthetic tenants, stable cursors, actor masking, audit immutability and no raw-audit access. No new account mutations, deployment, A11.7 or Data Disposition work.
+
 ## Boundaries for both assignments
 
 Additive checksummed migrations only. No production authentication, hosted administration/configuration writes, public signup, real customer provisioning/data, shared migration, provider setting changes, deployment or push. Use synthetic fixtures and disposable PostgreSQL. Record test results and any externally blocked gate explicitly. No emergency bypass, no modification of prior migration files.

@@ -7,6 +7,10 @@ export function isDirectoryUserId(id) {
   return typeof id === 'string' && id.length === 36 && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
 }
 
+export function isHistoryCursor(cursor) {
+  return isDirectoryUserId(cursor) && cursor === cursor.toLowerCase();
+}
+
 export function directoryListPath(query, offset) {
   const params = new URLSearchParams();
   if (query.trim()) params.set('q', query.trim());

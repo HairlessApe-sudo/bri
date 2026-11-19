@@ -40,6 +40,7 @@ from bri.api.configuration import (
     build_trusted_request_context,
     create_configuration_router,
 )
+from bri.api.account_history import create_account_history_router
 from bri.api.approval_routes import create_approval_router
 from bri.api.boundary_audit import audit_denial, mark
 from bri.api.database import Database, DatabaseUnavailable, ProtectedAccessDenied, TenantSession
@@ -566,6 +567,9 @@ def create_app(
     async def safe_request_observability(request: Request, call_next):
         request_id = str(uuid4())
         request.state.request_id = request_id
+        path = request.url.path
+        path_parts = path.rstrip("/").split("/")
+        account_history = len(path_parts) == 5 and path_parts[1:3] == ["v1", "users"] and path_parts[4] == "history"
         log_method = request.method if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} else "OTHER"
         started = time.perf_counter()
         try:
@@ -579,14 +583,18 @@ def create_app(
                 type(exc).__name__,
                 elapsed_ms,
             )
-            if active_settings.auth_mode != "supabase" or not getattr(request.state, "audit_action", None):
+            if not account_history and (
+                active_settings.auth_mode != "supabase" or not getattr(request.state, "audit_action", None)
+            ):
                 raise
             response = JSONResponse({"detail": "Security service unavailable"}, status_code=503)
         if active_settings.auth_mode == "supabase":
             response = await audit_denial(request, response, active_database)
         elapsed_ms = (time.perf_counter() - started) * 1000
         response.headers["X-Request-ID"] = request_id
-        if request.url.path == "/v1/knowledge" or request.url.path.startswith(("/v1/knowledge/", "/v1/sources/")):
+        if account_history:
+            response.headers["Cache-Control"] = "no-store"
+        if path == "/v1/knowledge" or path.startswith(("/v1/knowledge/", "/v1/sources/")):
             response.headers["Cache-Control"] = "private, no-store"
         _REQUEST_LOG.info(
             "request_completed request_id=%s method=%s status=%s duration_ms=%.1f",
@@ -1208,6 +1216,10 @@ def create_app(
     app.include_router(create_user_delegation_router())
     app.include_router(create_user_deactivation_router())
     app.include_router(create_user_directory_router(
+        principal_dependency=current_principal,
+        protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),
+    ))
+    app.include_router(create_account_history_router(
         principal_dependency=current_principal,
         protected_scope=lambda *args, **kwargs: active_database.protected_tenant_context(*args, **kwargs),
     ))

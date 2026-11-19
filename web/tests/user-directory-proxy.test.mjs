@@ -12,6 +12,44 @@ const status = (code) => (error) => error instanceof proxy.BackendRequestError &
 function unused() { assert.fail('Session lookup must not run'); }
 
 const list = '/v1/users';
+const historySuffix = `/${id}/history`;
+const history = `${list}${historySuffix}`;
+
+test('history rejects every unsupported query before session lookup', async () => {
+  for (const query of ['q=x', 'offset=0', 'limit=0', 'limit=101', 'limit=1.5', 'limit=1e1', 'limit=0001', 'limit=',
+    'limit=1%0A', 'limit=1&limit=2', 'limit=1&%6cimit=2', 'cursor=', 'cursor=invalid', `cursor=${id}%0A`,
+    'cursor=ABCDEFAB-0000-0000-0000-000000000001', `cursor=${id}&cursor=${id}`]) {
+    await assert.rejects(proxy.prepareProxyRequest(request(`${historySuffix}?${query}`), history, env, unused), status(400));
+  }
+});
+
+test('history is exact, GET-only, and denied in synthetic mode before session lookup', async () => {
+  await assert.rejects(proxy.prepareProxyRequest(request(historySuffix), history, { BRI_UI_AUTH_MODE: 'synthetic' }, unused), status(404));
+  for (const method of ['POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS']) {
+    await assert.rejects(proxy.prepareProxyRequest(request(historySuffix, { method }), history, env, unused), status(404));
+  }
+  for (const [suffix, path] of [
+    [`/${id}/%68istory`, history], [`/${id}%2Fhistory`, history], [`/${id}/%2568istory`, `${list}/${id}/%68istory`],
+    [`/${id}/history/`, history], [`/${id}/history/extra`, `${history}/extra`], ['/invalid/history', `${list}/invalid/history`],
+  ]) {
+    await assert.rejects(proxy.prepareProxyRequest(request(suffix), path, env, unused), status(404));
+  }
+});
+
+test('history forwards optional bounds and enforces the directory session boundary', async () => {
+  for (const query of ['', '?limit=1', '?limit=025', `?cursor=${id}`, `?limit=100&cursor=${id}`]) {
+    const target = await proxy.prepareProxyRequest(request(`${historySuffix}${query}`), history, env, async (verified) => {
+      assert.equal(verified, true);
+      return session;
+    });
+    assert.equal(target.url, `${env.BRI_API_ORIGIN}${history}${query}`);
+    assert.deepEqual([...target.headers], [['authorization', `Bearer ${session}`]]);
+  }
+  await assert.rejects(proxy.prepareProxyRequest(request(historySuffix), history, env, async () => undefined), status(401));
+  for (const name of ['authorization', 'x-dev-identity', 'x-tenant-id', 'x-bri-tenant-context', 'x-role', 'x-bri-role']) {
+    await assert.rejects(proxy.prepareProxyRequest(request(historySuffix, { headers: { [name]: 'fixture' } }), history, env, unused), status(400));
+  }
+});
 
 test('directory forwards only the verified server session to the fixed list and UUID detail paths', async () => {
   for (const [path, suffix, query] of [[list, '', ''], [list, '?q=A%26B+%2B&limit=100&offset=0', '?q=A%26B+%2B&limit=100&offset=0'], [`${list}/${id}`, `/${id}`, '']]) {
