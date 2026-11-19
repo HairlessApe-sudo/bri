@@ -1,3 +1,5 @@
+import { DIRECTORY_MAX_OFFSET, DIRECTORY_MAX_QUERY, isDirectoryUserId } from './user-directory.mjs';
+
 export class BackendRequestError extends Error {
   constructor(message, status) {
     super(message);
@@ -18,6 +20,8 @@ const READ_ROUTES = [
   /^\/v1\/knowledge\/(?!proposals$)[A-Za-z0-9._~-]+$/,
   /^\/v1\/sources\/[A-Za-z0-9._~-]+$/,
 ];
+
+const DIRECTORY_LIST = '/v1/users';
 
 function backendOrigin(env, mode) {
   const fallback = mode === 'synthetic' ? 'http://127.0.0.1:8000' : '';
@@ -58,15 +62,16 @@ export function resolveUiAuthMode(env = process.env) {
   return mode;
 }
 
-export function buildBackendRequest(path, searchParams, env = process.env, options = {}) {
-  const method = String(options.method || 'GET').toUpperCase();
+function validateBackendTarget(path, searchParams, mode, method) {
   const normalized = `/${String(path).replace(/^\/+|\/+$/g, '')}`;
-  const isRead = method === 'GET' && READ_ROUTES.some((route) => route.test(normalized));
+  const directory = normalized === DIRECTORY_LIST || normalized.startsWith(`${DIRECTORY_LIST}/`);
+  const isDirectoryRead = directory && mode === 'supabase' && path === normalized
+    && (normalized === DIRECTORY_LIST || isDirectoryUserId(normalized.slice(DIRECTORY_LIST.length + 1)));
+  const isRead = method === 'GET' && (isDirectoryRead || READ_ROUTES.some((route) => route.test(normalized)));
   const isSessionAction = normalized === '/v1/auth/session' && ['POST', 'DELETE'].includes(method);
   const isRecovery = normalized === '/v1/auth/recovery/invalidate' && method === 'POST';
   if (!isRead && !isSessionAction && !isRecovery) throw new BackendRequestError('Not found', 404);
 
-  const mode = resolveUiAuthMode(env);
   if (mode === 'synthetic' && !isRead) throw new BackendRequestError('Not found', 404);
   if (mode === 'supabase' && method !== 'GET' && method !== 'POST' && method !== 'DELETE') {
     throw new BackendRequestError('Not found', 404);
@@ -74,10 +79,24 @@ export function buildBackendRequest(path, searchParams, env = process.env, optio
 
   const params = new URLSearchParams();
   for (const [key, value] of searchParams.entries()) {
-    if (normalized !== '/v1/knowledge/search' || key !== 'q') {
+    const allowed = normalized === DIRECTORY_LIST ? ['q', 'limit', 'offset'].includes(key)
+      : normalized === '/v1/knowledge/search' && key === 'q';
+    if (!allowed) {
       throw new BackendRequestError('Unsupported query parameter', 400);
     }
     if (params.has(key)) throw new BackendRequestError('Duplicate query parameter', 400);
+    if (normalized === DIRECTORY_LIST) {
+      if (key === 'q') {
+        if ([...value].length > DIRECTORY_MAX_QUERY || value.includes('\0')) {
+          throw new BackendRequestError('Invalid directory query', 400);
+        }
+      } else {
+        const [min, max] = key === 'limit' ? [1, 100] : [0, DIRECTORY_MAX_OFFSET];
+        if (!value || /[^0-9]/.test(value) || value.length > String(max).length || Number(value) < min || Number(value) > max) {
+          throw new BackendRequestError('Invalid pagination parameter', 400);
+        }
+      }
+    }
     params.append(key, value);
   }
   if (normalized === '/v1/knowledge/search' && !params.has('q')) {
@@ -85,6 +104,10 @@ export function buildBackendRequest(path, searchParams, env = process.env, optio
   }
   if (isSessionAction && params.size) throw new BackendRequestError('Session routes do not accept query parameters', 400);
 
+  return { normalized, params, directory };
+}
+
+function makeBackendRequest({ normalized, params }, env, mode, accessToken) {
   const base = backendOrigin(env, mode);
   const target = new URL(normalized, base);
   target.search = params.toString();
@@ -97,13 +120,18 @@ export function buildBackendRequest(path, searchParams, env = process.env, optio
     return { url: target.toString(), headers: new Map([['x-dev-identity', identity]]) };
   }
 
-  const accessToken = options.accessToken;
   if (!normalized.startsWith('/health') && (!accessToken || typeof accessToken !== 'string' || accessToken.length > 16_384 || !/^[A-Za-z0-9._-]+$/.test(accessToken))) {
     throw new BackendRequestError('Authentication required', 401);
   }
   const headers = new Map();
   if (accessToken) headers.set('authorization', `Bearer ${accessToken}`);
   return { url: target.toString(), headers };
+}
+
+export function buildBackendRequest(path, searchParams, env = process.env, options = {}) {
+  const mode = resolveUiAuthMode(env);
+  const method = String(options.method || 'GET').toUpperCase();
+  return makeBackendRequest(validateBackendTarget(path, searchParams, mode, method), env, mode, options.accessToken);
 }
 
 export function assertNoSpoofedIdentityHeaders(headers) {
@@ -128,16 +156,29 @@ export function assertSameOriginMutation(requestUrl, originHeader) {
 
 export async function prepareProxyRequest(request, path, env, readSessionToken) {
   const method = request.method.toUpperCase();
+  const mode = resolveUiAuthMode(env);
+  const target = validateBackendTarget(path, new URL(request.url).searchParams, mode, method);
   let accessToken;
-  if (resolveUiAuthMode(env) === 'supabase') {
+  if (mode === 'supabase') {
     assertNoSpoofedIdentityHeaders(request.headers);
+    if (target.directory && ['authorization', 'x-role', 'x-bri-role'].some((name) => request.headers.has(name))) {
+      throw new BackendRequestError('Client authorization headers are not accepted', 400);
+    }
     if (method === 'POST' || method === 'DELETE') {
       assertSameOriginMutation(request.url, request.headers.get('origin'));
       if (request.body !== null) throw new BackendRequestError('Session routes do not accept a body', 400);
     }
-    accessToken = await readSessionToken();
+    accessToken = await readSessionToken(target.directory);
     if (!accessToken) throw new BackendRequestError('Authentication required', 401);
   }
-  const target = buildBackendRequest(path, new URL(request.url).searchParams, env, {method, accessToken});
-  return {...target, accessToken};
+  return {...makeBackendRequest(target, env, mode, accessToken), accessToken, directory: target.directory};
+}
+
+export async function readProxySessionToken(auth, directory) {
+  const { data: { session }, error } = await auth.getSession();
+  const token = error ? undefined : session?.access_token;
+  if (!token || !directory) return token;
+  // Verify the exact cookie-derived token being sent; the API authorizes the resource.
+  const { data, error: claimsError } = await auth.getClaims(token);
+  if (!claimsError && data?.claims?.sub && data.claims.aal === 'aal2') return token;
 }

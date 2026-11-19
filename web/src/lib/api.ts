@@ -33,6 +33,15 @@ export type SourceReference = Omit<KnowledgeRecord, 'scope_id' | 'validation_sta
 export type Citation = SourceReference & { excerpt: string };
 export type SearchResult = { status: string; answer: string | null; citations: Citation[] };
 
+export type DirectoryUser = {
+  id: string;
+  display_name: string | null;
+  status: 'pending' | 'active' | 'suspended' | 'deactivated';
+  role: 'user' | 'superuser';
+  mfa_status: 'verified' | 'unknown';
+};
+export type DirectoryUserPage = { items: DirectoryUser[]; has_more: boolean };
+
 export async function fetchApi<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { headers: { accept: 'application/json' }, cache: 'no-store', signal });
   if (!response.ok) {

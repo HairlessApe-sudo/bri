@@ -53,6 +53,10 @@ npm run build
 
 The Node test suite covers the proxy's fixed identity, route allowlist, query allowlist, and loopback/backend configuration. Existing FastAPI tests cover unknown/missing identity, non-loopback rejection, permission checks, tenant-selector rejection, and scope isolation. Database integration tests are opt-in and write synthetic rows inside rollback-only transactions; do not run them against the shared development database unless separately approved.
 
+## Read-only user directory (A11.1)
+
+The Users screen (`/users`) is available in authenticated mode, not synthetic development mode. The browser uses the existing same-origin proxy for `GET /api/bri/v1/users` and `GET /api/bri/v1/users/{uuid}`. The proxy verifies the SSR session token; FastAPI independently enforces the active client Admin session and explicit directory grant. Search by name or UUID and page through results; there are no writes. Directory tests use in-process fixtures rather than provider or deployed API credentials.
+
 ## Controlled password recovery (A10): hosted flow unavailable
 
 Both `/auth/recover` and `/auth/update-password` render the same static support notice. Neither page prompts for TOTP or reads provider credentials. They do not request reset mail, collect a password, reserve an operation, sign the user out, or start a BRI session. Normal password sign-in and TOTP remain separate. No public environment setting enables controlled recovery.

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { recoveryBinding } from '@/lib/password-recovery.mjs';
-import { BackendRequestError, prepareProxyRequest } from '@/lib/backend-proxy.mjs';
+import { BackendRequestError, prepareProxyRequest, readProxySessionToken } from '@/lib/backend-proxy.mjs';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 type RouteContext = { params: Promise<{ path: string[] }> };
@@ -9,11 +9,10 @@ async function proxyRequest(request: Request, context: RouteContext) {
   try {
     const { path } = await context.params;
     const method = request.method.toUpperCase();
-    const { url, headers, accessToken } = await prepareProxyRequest(request, `/${path.join('/')}`, process.env, async () => {
+    const { url, headers, accessToken, directory } = await prepareProxyRequest(request, `/${path.join('/')}`, process.env, async (directory: boolean) => {
       const supabase = await createSupabaseServerClient();
-      // The API verifies this bearer independently. Browser Authorization is never forwarded.
-      const { data: { session }, error } = await supabase.auth.getSession();
-      return error ? undefined : session?.access_token;
+      // BRI independently verifies the application session, client Admin role and grant.
+      return readProxySessionToken(supabase.auth, directory);
     });
     const upstream = await fetch(url, {
       method,
@@ -22,6 +21,11 @@ async function proxyRequest(request: Request, context: RouteContext) {
       redirect: 'manual',
       signal: AbortSignal.timeout(8000),
     });
+    if (directory && !upstream.ok) {
+      await upstream.body?.cancel();
+      const status = upstream.status >= 400 ? upstream.status : 502;
+      return NextResponse.json({ detail: 'The directory request could not be completed.' }, { status, headers: { 'cache-control': 'no-store' } });
+    }
     const binding = accessToken && method === 'POST' && path.join('/') === 'v1/auth/recovery/invalidate' && upstream.status === 204
       ? await recoveryBinding(accessToken) : null;
     const body = upstream.status === 204 || upstream.status === 304 ? null : await upstream.text();

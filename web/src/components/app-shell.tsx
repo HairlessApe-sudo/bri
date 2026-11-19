@@ -10,6 +10,7 @@ const links = [
   { href: '/organization', label: 'Organisation', short: '02' },
   { href: '/knowledge', label: 'Knowledge', short: '03' },
 ];
+const directoryLink = { href: '/users', label: 'Users', short: '04' };
 
 type AuthMode = 'synthetic' | 'supabase';
 
@@ -52,7 +53,7 @@ export function AppShell({ children, authMode }: { children: React.ReactNode; au
       <div className="environment"><span className="environment-dot" />{hosted ? 'Authenticated workspace' : 'Synthetic development'}</div>
       <p className="nav-label">WORKSPACE</p>
       <nav aria-label="Main navigation" className="main-nav">
-        {links.map((item) => <Link key={item.href} href={item.href} aria-current={pathname === item.href ? 'page' : undefined} className={pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href)) ? 'nav-link active' : 'nav-link'}>
+        {(hosted ? [...links, directoryLink] : links).map((item) => <Link key={item.href} href={item.href} aria-current={pathname === item.href ? 'page' : undefined} className={pathname === item.href || (item.href !== '/' && pathname.startsWith(`${item.href}/`)) ? 'nav-link active' : 'nav-link'}>
           <span className="nav-index">{item.short}</span>{item.label}<span className="nav-arrow">↗</span>
         </Link>)}
       </nav>

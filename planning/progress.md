@@ -1,7 +1,14 @@
 # BRI Project Progress
 
-Last updated: 2026-11-18
+Last updated: 2026-11-19
 Stage: 3 — platform foundation MVP, synthetic development implementation
+
+## A11.1 — Tenant-scoped user directory (2026-11-19)
+
+- Implemented the read-only `/users` workspace screen and `GET /v1/users` (literal name or exact UUID search, bounded pagination) and `GET /v1/users/{id}`. A10 at `06d3927` is the baseline. No synthetic-mode access, provider account lookup, provisioning, or hosted writes.
+- The API requires a verified active session, a single server-resolved operational tenant, the client Admin role, and explicit `user:directory:read` at that tenant's root. Additive migration `0017_user_directory.sql` independently checks authority inside the protected database snapshot and preserves forced RLS and existing direct-read restrictions. Foreign, excluded, and missing detail records return the same 404 to an authorized reader. No directory grants are seeded.
+- The response contains only the BRI account UUID, optional display name, lifecycle status, ordinary role (`user` or `superuser`), and `verified`/`unknown` MFA status. Existing display names are unset without a backfill; absent, stale, or invalidated MFA evidence is `unknown`. No profile writes were added.
+- Verified locally: 47 focused backend tests, including 13 directory tests on two synthetic tenants with real restricted-role PostgreSQL and mocked provider auth; two verifier guard tests; 39 focused frontend and proxy/recovery regression tests; TypeScript and optimized web build. Checked migration checksums 0001–0017 and an unchanged replay on the disposable database. No hosted provider or deployment validation; A11.2 not started.
 
 ## A10 and A11 approved scope (2026-11-18)
 
