@@ -1,6 +1,8 @@
 # A11 consolidated local acceptance
 
-Scope: the [original A11 brief](assignments-10-11.md#a11--client-user-administration-gated-on-accepted-a10) and its explicitly approved subdivisions. A11.9 is the final local closeout, not an original numbered assignment or approval to deploy. This matrix records the acceptance scope; the consolidated verdict depends on final integrated verification and independent review.
+Scope: the [original A11 brief](assignments-10-11.md#a11--client-user-administration-gated-on-accepted-a10) and its explicitly approved subdivisions. A11.9 is the final local closeout, not an original numbered assignment or approval to deploy. This matrix records the acceptance scope.
+
+A11 accepted for the approved local scope; independent security review found no blockers in the delivered tree. The reviewed implementation was delivered as `bb5db693c5dc4abdc2e4e444e8cdce29349e289b`. This verdict does not accept hosted identity-provider behavior, production execution or deployed ACLs, generic Data Disposition, the broader MVP, or a pilot.
 
 | Original requirement | Implemented workflow and boundary | Acceptance evidence |
 | --- | --- | --- |
