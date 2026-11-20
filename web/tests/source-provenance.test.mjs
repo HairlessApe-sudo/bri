@@ -15,6 +15,9 @@ registerHooks({
     if (specifier === 'next/link' || specifier === 'next/navigation' || specifier === '@/components/data-state') {
       return { url: `data:text/javascript,export default () => null; export const useParams = () => globalThis.publishedRecordParams; export const useRemote = globalThis.capturePublishedRecordRequest; export const PageHeading = () => null; export const StateMessage = () => null;`, shortCircuit: true };
     }
+    if (specifier === '@/components/knowledge-detail-view' || specifier === '@/components/sources-detail-view') {
+      return { url: 'data:text/javascript,export const KnowledgeDetailView = () => null; export const SourceDetailView = () => null;', shortCircuit: true };
+    }
     if (specifier === '@/components/source-provenance') {
       return next(new URL('../src/components/source-provenance.tsx', import.meta.url).href, context);
     }

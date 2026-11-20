@@ -1,6 +1,6 @@
 # A12 — Governed CSV intake
 
-The owner approved a local, synthetic-only AD-09 slice. This is not hosted ingestion, a malware-scanning service, production storage, or a general file import system.
+The owner approved a local, synthetic-only AD-09 slice. This is not hosted ingestion, a malware-scanning service, production storage, or a general file import system. See the [A12 acceptance verdict and verification evidence](../planning/progress.md#a12--governed-csv-intake-2026-11-20).
 
 ## Boundaries
 

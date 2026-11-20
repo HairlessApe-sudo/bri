@@ -43,6 +43,10 @@ The API remains the authorization boundary. It resolves tenant membership and ex
 
 Loading, empty, API error, 401 and 403 states are shown. Search is read-only; the frontend has no direct Supabase/database client.
 
+## A13 local fixture workspace
+
+The separate [A13 local fixture workspace](local-workspace/README.md) uses `http://127.0.0.2:3013` and a host-only cookie scoped to `/api/bri-local`. The normal app does not mount it.
+
 ## Checks
 
 ```sh

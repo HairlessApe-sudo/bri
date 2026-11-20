@@ -3,7 +3,16 @@
 Last updated: 2026-11-20
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A13 — Evidence-grounded questions in the local workspace (2026-11-20)
+
+- Owner-approved local synthetic-only assignment; not an original roadmap work-package number. See [local knowledge questions](../architecture/local-knowledge-questions.md).
+- The isolated workspace connects to the existing A12 published reader through an authenticated, loopback-only read bridge. It reuses exact-version provenance and deterministic evidence matching; normal release behavior is unchanged. No new migration is required.
+- Local verification: 581 backend and 135 frontend tests passed without skips; both TypeScript checks and the optimized release build passed. The 30 unchanged migration checksums replayed unchanged on disposable PostgreSQL 16.2 with forced RLS on 57 tables. Independent security review found no blockers in implementation tree `7849fdb963377e23d98f321532e7fc102c8b96ca`; this progress entry is the only follow-up to that tree.
+- The [signed fixture demo](../scripts/a13-demo.md) verified all three answer states, source follow-through, cookie isolation and revocation on a fresh read in Chromium. Cold history navigation was verified; Chromium did not exercise BFCache restoration. Hosted use, new formats, external models, and Decision Intelligence remain excluded.
+
 ## A12 — Governed CSV intake (2026-11-20)
+
+A12 accepted for local synthetic-data-only use. Hosted execution and deployed ACL verification remain outstanding. Production storage, malware scanning, real-data retention, and Generic Data Disposition are excluded.
 
 - Owner-approved local, synthetic-only AD-09 slice; A12 is not an original roadmap work package. See [governed CSV intake](../architecture/governed-csv-intake.md).
 - Migration `0030` adds private job and audit metadata, original-artifact evidence, and database-enforced independent review. No release role receives intake or worker execution. Published retrieval still requires exact-node `knowledge:read` and both explicit record and source-version allow decisions.

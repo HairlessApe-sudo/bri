@@ -1,4 +1,4 @@
-"""Isolated A12 staging assembly. Not imported or mounted by the release app.
+"""Isolated CSV staging assemblies. Not imported or mounted by the release app.
 
 The trusted caller supplies fixture-only connections and a MockTransport.
 Serve on an IP loopback listener with proxy headers and access logs disabled.
@@ -10,18 +10,18 @@ import ipaddress
 import json
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from stat import S_ISDIR
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
 import psycopg
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -40,7 +40,7 @@ from bri.ingestion.csv_intake import (
     LocalCsvQuarantine,
     ProcessOutcome,
 )
-from bri.knowledge.query import answer_question
+from bri.knowledge.query import KnowledgeItem, answer_question
 
 PREFIX = '/v1/sources/csv'
 REVIEW_PREFIX = '/v1/knowledge/proposals/csv'
@@ -52,6 +52,13 @@ Scope = Callable[[], AbstractContextManager[psycopg.Connection]]
 _NODE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', re.ASCII)
 _UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', re.ASCII)
 _PROPOSAL = re.compile(r'csv:' + _UUID.pattern)
+_READ_DETAIL = re.compile(rb'/v1/(?:knowledge|sources)/csv:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})')
+_READ_LIST = b'/v1/knowledge'
+_READ_SEARCH = b'/v1/knowledge/search'
+_A13_LIST_MAX_ITEMS = 100
+_A13_LIST_PREVIEW_CHARS = 512
+_A13_LIST_MAX_BYTES = 1024 * 1024  # Entire encoded JSON array, including delimiters.
+_A13_LIST_TRUNCATED = 'X-BRI-Knowledge-List-Truncated'
 _MEDIA = re.compile(r'text/csv(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?', re.IGNORECASE | re.ASCII)
 _SUBMIT = 'SELECT * FROM bri.csv_submit(%s,%s,%s,%s,%s,%s,%s,%s,%s)'
 _READY = 'SELECT bri.csv_mark_ready(%s,%s,%s,%s,%s,%s)'
@@ -89,7 +96,7 @@ class _Authority:
         return self.tenant, self.actor, self.sid, self.issuer
 
 
-def _private_request(request: Request, app: FastAPI) -> None:
+def _private_request(request: Request, app: FastAPI, *, reader_only: bool = False) -> None:
     hosts = request.headers.getlist('host')
     server = request.scope.get('server')
     try:
@@ -109,14 +116,41 @@ def _private_request(request: Request, app: FastAPI) -> None:
         for h in request.headers
     ):
         raise HTTPException(403, 'Private loopback listener required')
-    query = request.query_params.multi_items()
+    # The stricter reader allowlist validates a bounded raw query separately.
+    query = () if reader_only else request.query_params.multi_items()
     if (query and not (request.method == 'GET' and request.url.path == '/v1/knowledge/search'
                        and len(query) == 1 and query[0][0] == 'q')) or any(
         h in {'tenant', 'tenant-id', 'actor', 'actor-id', 'principal', 'principal-id', 'role',
               'session-id', 'auth-user-id', 'issuer', 'cookie'}
-        or (h.startswith('x-') and h != 'x-node-id')
+        or (h.startswith('x-') and (reader_only or h != 'x-node-id'))
         for h in request.headers
     ):
+        raise HTTPException(400, 'Authority is server-controlled')
+
+
+def _reader_request(request: Request) -> None:
+    """Reject aliases and unapproved methods before auth or DB access."""
+    raw = request.scope.get('raw_path', b'')
+    if (request.method != 'GET' or not raw or not raw.isascii()
+            or raw.decode('ascii') != request.scope['path']):
+        raise HTTPException(404, 'Not Found')
+    if raw not in (_READ_LIST, _READ_SEARCH):
+        detail = _READ_DETAIL.fullmatch(raw)
+        if detail is None or not UUID(detail[1].decode('ascii')).int:
+            raise HTTPException(404, 'Not Found')
+
+    query = request.scope['query_string']
+    if raw == _READ_SEARCH:
+        # At most 512 UTF-8 characters, even when all bytes are percent-escaped.
+        if (len(query) <= 2 + 512 * 4 * 3 and re.fullmatch(rb'q=[^&]+', query)
+                and not re.search(rb'%(?![0-9A-Fa-f]{2})', query)):
+            try:
+                if 1 <= len(unquote_plus(query[2:].decode('ascii'), errors='strict')) <= 512:
+                    return
+            except UnicodeError:
+                pass
+        raise HTTPException(400, 'Invalid CSV question')
+    if query:
         raise HTTPException(400, 'Authority is server-controlled')
 
 
@@ -279,29 +313,18 @@ class _Worker:
             raise DatabaseUnavailable('CSV worker unavailable') from None
 
 
-def create_staged_csv_intake_app(
-    *, identity_scope: Scope, intake_scope: Scope, worker_scope: Scope, private_socket: Path,
-    auth_transport: httpx.MockTransport, store: LocalCsvQuarantine, dbname: str = 'postgres', port: int = 5432,
-    reader_scope: Scope | None = None,
-) -> FastAPI:
-    """Assemble with distinct disposable scopes and private storage.
-
-    HTTP submits, checks status, lists pending proposals, and records decisions.
-    A trusted in-process caller runs ``app.state.csv_worker.dispatch(job_id)``.
-    The stage review queue returns the existing ``csv:<uuid>`` proposal ID;
-    a review decision does not grant publication access. An optional fourth
-    scope serves governed published reads only on this private listener.
-    """
+def _stage_socket(private_socket: Path, auth_transport: httpx.MockTransport, *scopes: Scope) -> Path:
     socket = Path(private_socket).resolve(strict=True)
-    scopes = (identity_scope, intake_scope, worker_scope) + ((reader_scope,) if reader_scope is not None else ())
     if (len({id(scope) for scope in scopes}) != len(scopes)
             or type(auth_transport) is not httpx.MockTransport):
         raise ValueError('Private disposable database and distinct fixture scopes required')
-    identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
-    intake_db = _restricted(intake_scope, socket, dbname, port, _INTAKE)
-    worker_db = _restricted(worker_scope, socket, dbname, port, _WORKER)
-    reader_db = _restricted(reader_scope, socket, dbname, port, _READER) if reader_scope is not None else None
+    return socket
 
+
+_Authorize = Callable[[Request, str, str | None], Awaitable[_Authority]]
+
+
+def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, reader_only: bool = False):
     class IdentityDatabase(Database):
         @contextmanager
         def _connect(self):
@@ -312,25 +335,27 @@ def create_staged_csv_intake_app(
 
     registry = IdentityDatabase('', '')
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
-    app.state.csv_worker = _Worker(CsvIntakeProcessor(store, _WorkerRepo(worker_db)))
+    surface = 'CSV reader' if reader_only else 'CSV intake'
 
     @app.middleware('http')
     async def private(request: Request, call_next):
         cid = uuid4()
         request.state.csv_correlation = cid
         try:
-            _private_request(request, app)
+            _private_request(request, app, reader_only=reader_only)
+            if reader_only:
+                _reader_request(request)
             response = await call_next(request)
         except HTTPException as exc:
             response = JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
         except psycopg.errors.InsufficientPrivilege:
-            response = JSONResponse({'detail': 'CSV intake denied'}, status_code=403)
+            response = JSONResponse({'detail': f'{surface} denied'}, status_code=403)
         except (psycopg.errors.UniqueViolation, psycopg.errors.ObjectNotInPrerequisiteState):
-            response = JSONResponse({'detail': 'CSV intake conflict'}, status_code=409)
+            response = JSONResponse({'detail': f'{surface} conflict'}, status_code=409)
         except psycopg.errors.InvalidParameterValue:
             response = JSONResponse({'detail': _INVALID}, status_code=422)
         except Exception:  # Do not reflect SQL, storage, auth or parser diagnostics.
-            response = JSONResponse({'detail': 'CSV intake unavailable'}, status_code=503)
+            response = JSONResponse({'detail': f'{surface} unavailable'}, status_code=503)
         response.headers.update({'Cache-Control': 'no-store', 'X-Request-ID': str(cid)})
         return response
 
@@ -361,6 +386,31 @@ def create_staged_csv_intake_app(
             except AuthenticationUnavailable:
                 raise HTTPException(503, 'Authentication unavailable') from None
         return await run_in_threadpool(resolve, ident, action, node)
+
+    return app, authorize
+
+
+def create_staged_csv_intake_app(
+    *, identity_scope: Scope, intake_scope: Scope, worker_scope: Scope, private_socket: Path,
+    auth_transport: httpx.MockTransport, store: LocalCsvQuarantine, dbname: str = 'postgres', port: int = 5432,
+    reader_scope: Scope | None = None,
+) -> FastAPI:
+    """Assemble with distinct disposable scopes and private storage.
+
+    HTTP submits, checks status, lists pending proposals, and records decisions.
+    A trusted in-process caller runs ``app.state.csv_worker.dispatch(job_id)``.
+    The stage review queue returns the existing ``csv:<uuid>`` proposal ID;
+    a review decision does not grant publication access. An optional fourth
+    scope serves governed published reads only on this private listener.
+    """
+    scopes = (identity_scope, intake_scope, worker_scope) + ((reader_scope,) if reader_scope is not None else ())
+    socket = _stage_socket(private_socket, auth_transport, *scopes)
+    identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
+    intake_db = _restricted(intake_scope, socket, dbname, port, _INTAKE)
+    worker_db = _restricted(worker_scope, socket, dbname, port, _WORKER)
+    reader_db = _restricted(reader_scope, socket, dbname, port, _READER) if reader_scope is not None else None
+    app, authorize = _staged_app(identity_db, auth_transport)
+    app.state.csv_worker = _Worker(CsvIntakeProcessor(store, _WorkerRepo(worker_db)))
 
     def submit(authority, node, key, body, digest, cid):
         row = _command(intake_db, _INTAKE, _SUBMIT,
@@ -424,49 +474,123 @@ def create_staged_csv_intake_app(
         return {'id': proposal, 'decision': decision}
 
     if reader_db is not None:
-        from bri.api.app import (
-            KnowledgeRecordResponse, KnowledgeSearchResponse, SourceReferenceResponse,
-            _citation_response, _knowledge_item, _record_response, _source_response,
-        )
-
-        def read_published(authority: _Authority):
-            rows = _command(reader_db, _READER, _PUBLISHED, (
-                authority.tenant, authority.actor, UUID(authority.uid), authority.sid, authority.issuer,
-            ), many=True, read_only=True)
-            return tuple(_knowledge_item(row, governed_csv=True) for row in rows
-                         if is_authorized(authority.principal, 'knowledge:read', Resource(row[1], row[2])))
-
-        async def published(request):
-            await _body(request, 0)
-            authority = await authorize(request, 'knowledge:read')
-            return authority.principal, await run_in_threadpool(read_published, authority)
-
-        @app.get('/v1/knowledge', response_model=list[KnowledgeRecordResponse])
-        async def list_published(request: Request):
-            _, items = await published(request)
-            return [_record_response(item) for item in items]
-
-        @app.get('/v1/knowledge/search', response_model=KnowledgeSearchResponse)
-        async def search_published(request: Request, q: str = Query(min_length=1, max_length=512)):
-            principal, items = await published(request)
-            result = answer_question(principal, q, items)
-            return KnowledgeSearchResponse(status=result.status, answer=result.answer,
-                                           citations=[_citation_response(c) for c in result.citations])
-
-        @app.get('/v1/knowledge/{record_id}', response_model=KnowledgeRecordResponse)
-        async def detail_published(request: Request, record_id: str):
-            _, items = await published(request)
-            for item in items:
-                if item.record_id == record_id:
-                    return _record_response(item)
-            raise HTTPException(404, 'Knowledge record not found')
-
-        @app.get('/v1/sources/{record_id}', response_model=SourceReferenceResponse)
-        async def source_published(request: Request, record_id: str):
-            _, items = await published(request)
-            for item in items:
-                if item.record_id == record_id:
-                    return _source_response(item)
-            raise HTTPException(404, 'Source reference not found')
+        _mount_reads(app, authorize, reader_db)
 
     return app
+
+
+def create_staged_csv_reader_app(
+    *, identity_scope: Scope, reader_scope: Scope, private_socket: Path,
+    auth_transport: httpx.MockTransport, dbname: str = 'postgres', port: int = 5432,
+) -> FastAPI:
+    """Assemble A13 with only native identity and authorized published reads.
+
+    Serve directly on loopback with proxy headers and access logs disabled.
+    No intake or worker connection, quarantine store, or release route is mounted.
+    """
+    socket = _stage_socket(private_socket, auth_transport, identity_scope, reader_scope)
+    identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
+    reader_db = _restricted(reader_scope, socket, dbname, port, _READER)
+    app, authorize = _staged_app(identity_db, auth_transport, reader_only=True)
+    _mount_reads(app, authorize, reader_db, a13=True)
+    return app
+
+
+def _a13_csv_preview(content: str) -> str:
+    def line(cells: object) -> str:
+        if not isinstance(cells, list) or not all(isinstance(cell, str) for cell in cells):
+            return ''
+        return ' · '.join(filter(None, (' '.join(cell.split()) for cell in cells)))
+
+    try:
+        data = json.loads(content)
+    except (ValueError, RecursionError):
+        return ''
+    if not isinstance(data, dict):
+        return ''
+    rows = data.get('rows')
+    first_row = line(rows[0]) if isinstance(rows, list) and rows else ''
+    preview = first_row or line(data.get('headers'))
+    if len(preview) > _A13_LIST_PREVIEW_CHARS:
+        preview = preview[:_A13_LIST_PREVIEW_CHARS - 1].rstrip() + '…'
+    # Worker output is UTF-8, but do not emit unpaired surrogates from malformed JSON.
+    return re.sub(r'[\ud800-\udfff]', '\ufffd', preview)
+
+
+def _mount_reads(app: FastAPI, authorize: _Authorize, reader_db: Scope, *, a13: bool = False) -> None:
+    from bri.api.app import (
+        KnowledgeRecordResponse, KnowledgeSearchResponse, SourceReferenceResponse,
+        _citation_response, _knowledge_item, _record_response, _source_response,
+    )
+
+    def read_published(authority: _Authority, *, list_order: bool = False) -> tuple[KnowledgeItem, ...]:
+        rows = _command(reader_db, _READER, _PUBLISHED, (
+            authority.tenant, authority.actor, UUID(authority.uid), authority.sid, authority.issuer,
+        ), many=True, read_only=True)
+        if list_order:
+            rows = sorted(rows, key=lambda row: (row[4], row[0]))  # proposed_at, proposal_id
+        return tuple(_knowledge_item(row, governed_csv=True) for row in rows
+                     if is_authorized(authority.principal, 'knowledge:read', Resource(row[1], row[2])))
+
+    async def published(request: Request, *, list_order: bool = False) -> tuple[Principal, tuple[KnowledgeItem, ...]]:
+        await _body(request, 0)
+        authority = await authorize(request, 'knowledge:read', None)
+        return authority.principal, await run_in_threadpool(read_published, authority, list_order=list_order)
+
+    def a13_list_response(items: tuple[KnowledgeItem, ...]) -> Response:
+        # Apply both caps after exact authorization and full-content integrity verification.
+        # Neither cap limits PostgreSQL transfer or changes what search/detail can read.
+        encoded = []
+        size = 2  # []
+        for item in items[:_A13_LIST_MAX_ITEMS]:
+            record = _record_response(item)
+            record.content = _a13_csv_preview(item.content)
+            entry = record.model_dump_json().encode('utf-8')
+            size += len(entry) + bool(encoded)  # add comma after the first item
+            if size > _A13_LIST_MAX_BYTES:
+                break
+            encoded.append(entry)
+        return Response(b'[' + b','.join(encoded) + b']', media_type='application/json', headers={
+            _A13_LIST_TRUNCATED: 'true' if len(encoded) < len(items) else 'false',
+        })
+
+    @app.get('/v1/knowledge', response_model=list[KnowledgeRecordResponse], description=(
+        f'Oldest proposals first (proposal ID breaks ties). Returns at most {_A13_LIST_MAX_ITEMS} records '
+        f'and {_A13_LIST_MAX_BYTES} JSON bytes. Content is a preview of the first data row (or headers '
+        f'if blank or missing), up to {_A13_LIST_PREVIEW_CHARS} characters; hashes and provenance still '
+        f'describe the full extraction. {_A13_LIST_TRUNCATED} is true if authorized records were omitted. '
+        'Search and record/source detail are independent of this list.' if a13 else None
+    ))
+    async def list_published(request: Request):
+        _, items = await published(request, list_order=a13)
+        if a13:
+            return await run_in_threadpool(a13_list_response, items)
+        return [_record_response(item) for item in items]
+
+    @app.get('/v1/knowledge/search', response_model=KnowledgeSearchResponse)
+    async def search_published(request: Request, q: str = Query(min_length=1, max_length=512)):
+        principal, items = await published(request)
+        if a13:
+            from bri.knowledge.csv_questions import answer_csv_question
+
+            result = await run_in_threadpool(answer_csv_question, principal, q, items)
+        else:
+            result = answer_question(principal, q, items)
+        return KnowledgeSearchResponse(status=result.status, answer=result.answer,
+                                       citations=[_citation_response(c) for c in result.citations])
+
+    @app.get('/v1/knowledge/{record_id}', response_model=KnowledgeRecordResponse)
+    async def detail_published(request: Request, record_id: str):
+        _, items = await published(request)
+        for item in items:
+            if item.record_id == record_id:
+                return _record_response(item)
+        raise HTTPException(404, 'Knowledge record not found')
+
+    @app.get('/v1/sources/{record_id}', response_model=SourceReferenceResponse)
+    async def source_published(request: Request, record_id: str):
+        _, items = await published(request)
+        for item in items:
+            if item.record_id == record_id:
+                return _source_response(item)
+        raise HTTPException(404, 'Source reference not found')

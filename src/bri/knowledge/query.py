@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from bri.access.policy import Principal, Resource, is_authorized
@@ -13,6 +14,7 @@ _STOP_WORDS = frozenset(
 )
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
+_MINIMUM_MATCH = 0.30
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +72,21 @@ def _terms(value: str) -> frozenset[str]:
     )
 
 
+def _excerpts(content: str) -> Iterator[str]:
+    for sentence in _SENTENCES.split(content.strip()):
+        excerpt = sentence.strip()
+        if excerpt:
+            yield excerpt
+
+
+def _match_score(query_terms: frozenset[str], excerpt: str) -> float:
+    return len(query_terms & _terms(excerpt)) / len(query_terms)
+
+
+def _excerpt_key(excerpt: str) -> str:
+    return re.sub(r"\s+", " ", excerpt).casefold()
+
+
 def _citation(item: KnowledgeItem, excerpt: str) -> EvidenceCitation:
     return EvidenceCitation(
         record_id=item.record_id,
@@ -94,7 +111,7 @@ def answer_question(
     question: str,
     items: tuple[KnowledgeItem, ...] | list[KnowledgeItem],
     *,
-    minimum_match: float = 0.30,
+    minimum_match: float = _MINIMUM_MATCH,
 ) -> KnowledgeAnswer:
     """Return literal supported evidence or abstain; never call a model.
 
@@ -114,14 +131,8 @@ def answer_question(
         resource = Resource(item.tenant_id, item.scope_id)
         if not is_authorized(principal, "knowledge:read", resource):
             continue
-        for sentence in _SENTENCES.split(item.content.strip()):
-            excerpt = sentence.strip()
-            if not excerpt:
-                continue
-            sentence_terms = _terms(excerpt)
-            if not sentence_terms:
-                continue
-            score = len(query_terms & sentence_terms) / len(query_terms)
+        for excerpt in _excerpts(item.content):
+            score = _match_score(query_terms, excerpt)
             if score < minimum_match:
                 continue
             target = scored if item.current else stale
@@ -140,7 +151,7 @@ def answer_question(
 
     best_score = max(score for score, _, _ in scored)
     best = [entry for entry in scored if entry[0] == best_score]
-    distinct_text = {re.sub(r"\s+", " ", excerpt).casefold() for _, _, excerpt in best}
+    distinct_text = {_excerpt_key(excerpt) for _, _, excerpt in best}
     citations = tuple(
         _citation(item, excerpt)
         for _, item, excerpt in sorted(best, key=lambda entry: (entry[1].record_id, entry[2]))

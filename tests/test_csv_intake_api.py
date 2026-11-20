@@ -1,5 +1,8 @@
-"""A12 private intake and published-read acceptance with synthetic CSV and mocked provider."""
+"""Private CSV intake and published-read acceptance with synthetic CSV and mocked provider."""
 import os
+import socket
+import threading
+import time
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,6 +16,8 @@ from uuid import UUID, uuid4
 import httpx
 import psycopg
 import test_csv_intake_postgres as pg
+import uvicorn
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from test_authentication import ISSUER, SESSION_ID, USER_ID, auth_server_response, make_token
 
@@ -267,6 +272,67 @@ class StagedCsvTests(unittest.TestCase):
         self.assertEqual(self.auth, [])
         self.assertEqual(self.sql, [])
 
+    def test_reader_only_surface_and_canonical_request_boundary(self):
+        from bri.api.csv_intake import create_staged_csv_reader_app
+
+        app = create_staged_csv_reader_app(
+            identity_scope=lambda: self.scope('bri_app'), reader_scope=lambda: self.scope('bri_csv_reader'),
+            private_socket=self.socket, auth_transport=httpx.MockTransport(self.provider),
+        )
+        self.assertFalse(hasattr(app.state, 'csv_worker'))
+        self.assertEqual(len(app.routes), 4)
+        self.assertEqual({(route.path, frozenset(route.methods)) for route in app.routes if isinstance(route, APIRoute)}, {
+            (path, frozenset({'GET'})) for path in ('/v1/knowledge', '/v1/knowledge/search',
+                                                  '/v1/knowledge/{record_id}', '/v1/sources/{record_id}')
+        })
+        headers = {'Authorization': self.headers['Authorization']}
+        with TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50400)) as client:
+            for method, path, extra, status in (
+                ('GET', '/docs', {}, 404),
+                ('POST', self.prefix, {}, 404),
+                ('HEAD', '/v1/knowledge', {}, 404),
+                ('GET', '/v1/knowledge/', {}, 404),
+                ('GET', '/v1/%6bnowledge', {}, 404),
+                ('GET', f'/v1/sources/csv%3A{self.job}', {}, 404),
+                ('GET', f'/v1/sources/csv:{str(self.job).upper()}', {}, 404),
+                ('GET', f'/v1/knowledge/csv:{UUID(int=0)}', {}, 404),
+                ('GET', '/v1/knowledge/not-a-csv-record', {}, 404),
+                ('GET', '/v1/knowledge/search', {}, 400),
+                ('GET', '/v1/knowledge/search?q=first&q=second', {}, 400),
+                ('GET', '/v1/knowledge/search?%71=synthetic', {}, 400),
+                ('GET', '/v1/knowledge/search?q=%FF', {}, 400),
+                ('GET', '/v1/knowledge?tenant=synthetic', {}, 400),
+                ('GET', '/v1/knowledge', {'X-Node-ID': 'fixture-node'}, 400),
+                ('GET', '/v1/knowledge', {'X-Forwarded-For': '127.0.0.1'}, 403),
+            ):
+                with self.subTest(method=method, path=path, extra=extra):
+                    reply = client.request(method, path, headers={**headers, **extra}, follow_redirects=False)
+                    self.assertEqual(reply.status_code, status, reply.text)
+                    self.assertEqual(reply.headers['Cache-Control'], 'no-store')
+        self.assertEqual(self.auth, [])
+        self.assertEqual(self.sql, [])
+
+    def test_reader_assembly_requires_distinct_scopes_private_socket_and_mock_transport(self):
+        from bri.api.csv_intake import create_staged_csv_reader_app
+
+        def identity():
+            return self.scope('bri_app')
+
+        def reader():
+            return self.scope('bri_csv_reader')
+
+        transport = httpx.MockTransport(self.provider)
+        with self.assertRaises(ValueError):
+            create_staged_csv_reader_app(identity_scope=identity, reader_scope=identity, private_socket=self.socket,
+                                         auth_transport=transport)
+        with httpx.HTTPTransport() as http_transport, self.assertRaises(ValueError):
+            create_staged_csv_reader_app(identity_scope=identity, reader_scope=reader, private_socket=self.socket,
+                                         auth_transport=http_transport)  # type: ignore[arg-type]
+        self.socket.chmod(0o755)
+        with self.assertRaises(ValueError):
+            create_staged_csv_reader_app(identity_scope=identity, reader_scope=reader, private_socket=self.socket,
+                                         auth_transport=transport)
+
     def test_submission_checks_verified_role_session_exact_scope_and_input(self):
         from bri.ingestion.csv_intake import MAX_CSV_BYTES
 
@@ -312,13 +378,16 @@ class StagedCsvPostgres(unittest.TestCase):
     def stage_client(app):
         return TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50400))
 
-    def seed_readers(self):
+    def seed_readers(self, *, sibling=False):
         # Give the release readers independent sessions started after the grant writes.
         result = []
+        grants = [(self.tenant, self.actors[1], 'team'), (self.tenant, self.actors[0], 'root'),
+                  (self.foreign, self.foreign_actors[1], 'team')]
         with self.connect('postgres') as db:
-            for tenant, actor, node in ((self.tenant, self.actors[1], 'team'),
-                                        (self.tenant, self.actors[0], 'root'),
-                                        (self.foreign, self.foreign_actors[1], 'team')):
+            if sibling:
+                db.execute("INSERT INTO bri.org_nodes VALUES (%s,'sibling','team','Sibling','root')", (self.tenant,))
+                grants.append((self.tenant, self.actors[2], 'sibling'))
+            for tenant, actor, node in grants:
                 db.execute("INSERT INTO bri.app_roles VALUES (%s,'csv-reader','CSV reader') "
                            'ON CONFLICT DO NOTHING', (tenant,))
                 db.execute("INSERT INTO bri.role_permissions VALUES (%s,'csv-reader','knowledge:read') "
@@ -330,6 +399,249 @@ class StagedCsvPostgres(unittest.TestCase):
                            'VALUES (%s,%s,%s,clock_timestamp())', session)
                 result.append(session)
         return result
+
+    @contextmanager
+    def loopback_reader(self, app):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+            server = uvicorn.Server(uvicorn.Config(app, proxy_headers=False, access_log=False, log_level='error'))
+            thread = threading.Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not server.started and thread.is_alive() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(server.started)
+                with httpx.Client(base_url=f'http://127.0.0.1:{port}', trust_env=False) as client:
+                    yield client
+            finally:
+                server.should_exit = True
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+    def test_reader_only_answers_from_current_published_csv_on_real_loopback(self):
+        from bri.api import csv_intake
+        from bri.api.csv_intake import PREFIX, REVIEW_PREFIX, create_staged_csv_intake_app, create_staged_csv_reader_app
+        from bri.ingestion.csv_intake import LocalCsvQuarantine, ProcessOutcome, extract_bounded_csv
+
+        tokens, verifications = {}, []
+
+        def bearer(identity):
+            _, uid, sid = identity
+            token = make_token(sub=str(uid), session_id=str(sid))
+            tokens[f'Bearer {token}'] = str(uid)
+            return {'Authorization': f'Bearer {token}'}
+
+        def verify(request):
+            self.assertEqual(request.url.path, '/auth/v1/user')
+            uid = tokens.get(request.headers['Authorization'])
+            verifications.append(uid)
+            return auth_server_response(request, user_id=uid or '', status=200 if uid else 401)
+
+        def identity_scope():
+            return self.connect('bri_app')
+
+        def reader_scope():
+            return self.connect('bri_csv_reader')
+
+        transport = httpx.MockTransport(verify)
+        root = Path(self.enterContext(TemporaryDirectory(prefix='a13-http-')))
+        stage = create_staged_csv_intake_app(
+            identity_scope=identity_scope, private_socket=self.sock, auth_transport=transport,
+            intake_scope=lambda: self.connect('bri_csv_intake'),
+            worker_scope=lambda: self.connect('bri_csv_worker'), store=LocalCsvQuarantine(root),
+        )
+        intake = self.enterContext(self.stage_client(stage))
+        answer = 'Employee files must be retained for seven years.'
+        contradicts = 'Employee files must be retained for ten years.'
+        foreign_answer = 'Employee files must be retained for twelve years.'
+        question = 'How many years must employee files be retained?'
+
+        def publish(actors, evidence, *, extra_rows=''):
+            original = (f'Policy,Evidence\r\nRecords,"Administrative note.\r\n{evidence}"\r\n'
+                        + extra_rows).encode()
+            reply = intake.post(PREFIX, headers={**bearer(actors[2]), 'Content-Type': 'text/csv',
+                                                 'X-Node-ID': 'team', 'Idempotency-Key': str(uuid4())}, content=original)
+            self.assertEqual(reply.status_code, 202, reply.text)
+            job = UUID(reply.json()['id'])
+            self.assertIs(stage.state.csv_worker.dispatch(job), ProcessOutcome.COMPLETED)
+            ref = f'csv:{job}'
+            decision = intake.post(f'{REVIEW_PREFIX}/{ref}/decision', headers=bearer(actors[0]),
+                                   json={'decision': 'approved'})
+            self.assertEqual(decision.status_code, 200, decision.text)
+            return ref, original
+
+        ref, original = publish(self.actors, answer)
+        conflict_ref, _ = publish(self.actors, contradicts)
+        foreign_ref, _ = publish(self.foreign_actors, foreign_answer)
+        # Valid multi-row extractions; use small test limits, not a bridge overflow.
+        extra_rows = ('Fixture,"' + '😀""' * 1024 + '"\r\n') * 4
+        large = [publish(self.actors, f'{label} policy.', extra_rows=extra_rows)
+                 for label in ('Tungsten', 'Bismuth', 'Iridium')]
+        exact, parent, foreign, sibling = self.seed_readers(sibling=True)
+        reader, parent_reader, foreign_reader, sibling_reader = map(bearer, (exact, parent, foreign, sibling))
+        app = create_staged_csv_reader_app(identity_scope=identity_scope, reader_scope=reader_scope,
+                                           private_socket=self.sock, auth_transport=transport)
+
+        def set_gate(tenant, record, gate, readable):
+            with self.connect('bri_migrator') as db:
+                db.execute("SELECT set_config('bri.tenant_id',%s,true)", (tenant,))
+                if gate == 'record':
+                    db.execute('INSERT INTO bri.knowledge_record_access VALUES (%s,%s,%s) '
+                               'ON CONFLICT (tenant_id,source_id) DO UPDATE SET readable=excluded.readable',
+                               (tenant, record, readable))
+                else:
+                    db.execute('INSERT INTO bri.knowledge_version_access VALUES (%s,%s,%s,%s) '
+                               'ON CONFLICT (tenant_id,source_id,source_version_id) '
+                               'DO UPDATE SET readable=excluded.readable', (tenant, record, record, readable))
+
+        def rpc(tenant, identity):
+            with reader_scope() as db:
+                db.execute('SET TRANSACTION READ ONLY')
+                return {row[0] for row in db.execute(
+                    'SELECT proposal_id FROM bri.csv_read_published(%s,%s,%s,%s,%s)',
+                    (tenant, *identity, ISSUER),
+                )}
+
+        base = '/v1/knowledge'
+        insufficient = {'status': 'insufficient', 'answer': None, 'citations': []}
+        extraction = extract_bounded_csv(original)
+        source = {
+            'record_id': ref, 'title': 'Governed CSV', 'source_id': ref, 'source_version_id': ref,
+            'source_version': '1', 'extraction_id': ref, 'content_sha256': extraction.extracted_sha256,
+            'extractor_name': 'governed-csv', 'extractor_version': '1', 'source_location': 'csv:lines=1-3',
+            'original_sha256': sha256(original).hexdigest(), 'csv_first_line': 1, 'csv_last_line': 3,
+        }
+        record = {**source, 'scope_id': 'team', 'validation_state': 'approved', 'content': extraction.text}
+        supported = {'status': 'supported', 'answer': answer, 'citations': [{**source, 'excerpt': answer}]}
+        self.assertNotEqual(source['original_sha256'], source['content_sha256'])
+
+        with self.loopback_reader(app) as client:
+            def get(path, auth, *, status=200, params=None):
+                count = len(verifications)
+                reply = client.get(path, headers=auth, params=params)
+                self.assertEqual(reply.status_code, status, reply.text)
+                self.assertEqual(reply.headers['Cache-Control'], 'no-store')
+                if auth.keys() == {'Authorization'}:
+                    self.assertEqual(verifications[count:], [tokens[auth['Authorization']]])
+                return reply.json()
+
+            def search(auth, q=question, *, status=200):
+                return get(base + '/search', auth, status=status, params={'q': q})
+
+            def hidden(auth, identity, *, tenant=self.tenant, target=ref):
+                self.assertEqual(rpc(tenant, identity), set())
+                self.assertEqual(get(base, auth), [])
+                self.assertEqual(search(auth), insufficient)
+                for prefix in (base, '/v1/sources'):
+                    missing = get(f'{prefix}/csv:{uuid4()}', auth, status=404)
+                    self.assertEqual(get(f'{prefix}/{target}', auth, status=404), missing)
+
+            before = len(verifications)
+            get(base, {**reader, 'X-Forwarded-For': '127.0.0.1'}, status=403)
+            get(base, {}, status=401)
+            self.assertEqual(len(verifications), before)
+            hidden(reader, exact)
+            set_gate(self.tenant, ref, 'record', True)
+            hidden(reader, exact)
+            set_gate(self.tenant, ref, 'record', False)
+            set_gate(self.tenant, ref, 'version', True)
+            hidden(reader, exact)
+            set_gate(self.tenant, ref, 'record', True)
+
+            for gate in ('record', 'version'):
+                set_gate(self.foreign, foreign_ref, gate, True)
+            self.assertEqual(rpc(self.foreign, foreign), {foreign_ref})
+            self.assertEqual(rpc(self.tenant, foreign), set())
+            self.assertEqual(search(foreign_reader)['answer'], foreign_answer)
+            for prefix in (base, '/v1/sources'):
+                get(f'{prefix}/{ref}', foreign_reader, status=404)
+                get(f'{prefix}/{foreign_ref}', reader, status=404)
+            for auth, identity in ((parent_reader, parent), (sibling_reader, sibling)):
+                hidden(auth, identity)
+
+            self.assertEqual(rpc(self.tenant, exact), {ref})
+            self.assertEqual(get(base, reader), [{**record, 'content': f'Records · Administrative note. {answer}'}])
+            self.assertEqual(get(f'{base}/{ref}', reader), record)
+            self.assertEqual(get(f'/v1/sources/{ref}', reader), source)
+            self.assertEqual(search(reader), supported)
+            self.assertEqual(search(reader, 'What is the swimming pool capacity?'), insufficient)
+
+            set_gate(self.tenant, conflict_ref, 'record', True)
+            self.assertEqual(search(reader), supported)
+            set_gate(self.tenant, conflict_ref, 'version', True)
+            self.assertEqual(rpc(self.tenant, exact), {ref, conflict_ref})
+            conflict = search(reader)
+            self.assertEqual((conflict['status'], conflict['answer']), ('conflicting', None))
+            self.assertCountEqual([(c['record_id'], c['excerpt']) for c in conflict['citations']],
+                                  [(ref, answer), (conflict_ref, contradicts)])
+            for gate in ('record', 'version'):
+                set_gate(self.tenant, conflict_ref, gate, False)
+                self.assertEqual(rpc(self.tenant, exact), {ref})
+                self.assertEqual(search(reader), supported)
+                get(f'{base}/{conflict_ref}', reader, status=404)
+                get(f'/v1/sources/{conflict_ref}', reader, status=404)
+                set_gate(self.tenant, conflict_ref, gate, True)
+
+            for large_ref, _ in large:
+                for gate in ('record', 'version'):
+                    set_gate(self.tenant, large_ref, gate, True)
+            with (patch.object(csv_intake, '_A13_LIST_MAX_ITEMS', 4),
+                  patch.object(csv_intake, '_A13_LIST_PREVIEW_CHARS', 24)):
+                reply = client.get(base, headers=reader)
+                listing = reply.json()
+                self.assertEqual(reply.status_code, 200)
+                self.assertEqual([item['record_id'] for item in listing], [ref, conflict_ref, large[0][0], large[1][0]])
+                self.assertEqual(reply.headers['X-BRI-Knowledge-List-Truncated'], 'true')
+                self.assertLess(len(reply.content), 4096)
+                self.assertEqual(get(base, reader), listing)
+                with patch.object(csv_intake, '_A13_LIST_MAX_BYTES', 1024):
+                    byte_capped = client.get(base, headers=reader)
+                    self.assertEqual(byte_capped.status_code, 200)
+                    self.assertLessEqual(len(byte_capped.content), 1024)
+                    self.assertEqual(byte_capped.json(), listing[:1])
+                    self.assertEqual(byte_capped.headers['X-BRI-Knowledge-List-Truncated'], 'true')
+                for entry, (large_ref, payload) in zip(listing[2:], large[:2], strict=True):
+                    full = get(f'{base}/{large_ref}', reader)
+                    self.assertEqual(full['content'], extract_bounded_csv(payload).text)
+                    self.assertGreater(len(full['content'].encode()), 20_000)
+                    self.assertEqual(entry, {**full, 'content': 'Records · Administrativ…'})
+
+                omitted, payload = large[-1]
+                self.assertEqual(get(f'{base}/{omitted}', reader)['content'], extract_bounded_csv(payload).text)
+                self.assertEqual(get(f'/v1/sources/{omitted}', reader)['record_id'], omitted)
+                found = search(reader, 'Iridium policy')
+                self.assertEqual((found['answer'], found['citations'][0]['record_id']), ('Iridium policy.', omitted))
+                set_gate(self.tenant, omitted, 'version', False)
+                uncapped = client.get(base, headers=reader)
+                self.assertEqual(uncapped.json(), listing)
+                self.assertEqual(uncapped.headers['X-BRI-Knowledge-List-Truncated'], 'false')
+                get(f'{base}/{omitted}', reader, status=404)
+                get(f'/v1/sources/{omitted}', reader, status=404)
+                self.assertEqual(search(reader, 'Iridium'), insufficient)
+
+            with self.connect('postgres') as db:
+                db.execute('UPDATE bri.auth_sessions SET revoked_at=clock_timestamp() WHERE session_id=%s', (exact[2],))
+                after_session_revoked = (*exact[:2], uuid4())
+                db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                           'VALUES (%s,%s,%s,clock_timestamp())', after_session_revoked)
+            self.assertEqual(rpc(self.tenant, exact), set())
+            self.assertEqual(search(reader, status=403), {'detail': 'Current authorized BRI session required'})
+            self.assertEqual(search(bearer(after_session_revoked)), conflict)
+
+            with self.connect('postgres') as db:
+                self.assertEqual(db.execute("UPDATE bri.auth_role_assignments SET status='revoked' "
+                                            "WHERE tenant_id=%s AND principal_id=%s AND role_id='csv-reader' "
+                                            "AND scope_node_id='team'", (self.tenant, exact[0])).rowcount, 1)
+                after_grant_revoked = (*exact[:2], uuid4())
+                db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                           'VALUES (%s,%s,%s,clock_timestamp())', after_grant_revoked)
+            self.assertEqual(rpc(self.tenant, after_grant_revoked), set())
+            denied = bearer(after_grant_revoked)
+            self.assertEqual(search(denied, status=403), {'detail': 'Current authorized BRI session required'})
+            for url in (base, f'{base}/{ref}', f'/v1/sources/{ref}'):
+                get(url, denied, status=403)
 
     def assert_published_reads(self, release, auth, proposal, expected=None, *, needle='a12syntheticartifact'):
         base = '/v1/knowledge'

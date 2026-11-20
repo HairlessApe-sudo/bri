@@ -1,27 +1,28 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { fetchApi } from '@/lib/api';
+import { visibleRemote } from '@/lib/remote-state.mjs';
 
-type Remote<T> = { data: T | null; error: Error | null; loading: boolean };
-export function useRemote<T>(path: string | null, refreshKey = 0): Remote<T> {
-  const [state, setState] = useState<Remote<T>>({ data: null, error: null, loading: Boolean(path) });
-  const reload = useCallback(() => {
-    if (!path) {
-      setState({ data: null, error: null, loading: false });
-      return;
-    }
+export type Remote<T> = { data: T | null; error: Error | null; loading: boolean };
+export function useRemote<T>(path: string | null, refreshKey = 0, decode?: (value: unknown) => T): Remote<T> {
+  const [state, setState] = useState<(Remote<T> & {path: string; refreshKey: number}) | null>(null);
+  // Retire the request in the same commit that disables its path (including pagehide).
+  useLayoutEffect(() => {
+    if (!path) return;
     const controller = new AbortController();
-    setState((old) => ({ ...old, loading: true, error: null }));
     fetchApi<T>(path, controller.signal)
-      .then((data) => setState({ data, error: null, loading: false }))
+      .then((value) => {
+        if (!controller.signal.aborted) {
+          setState({ path, refreshKey, data: decode ? decode(value) : value, error: null, loading: false });
+        }
+      })
       .catch((error: Error) => {
-        if (error.name !== 'AbortError') setState({ data: null, error, loading: false });
+        if (!controller.signal.aborted) setState({ path, refreshKey, data: null, error, loading: false });
       });
     return () => controller.abort();
-  }, [path]);
-  useEffect(() => reload(), [reload, refreshKey]);
-  return state;
+  }, [path, refreshKey, decode]);
+  return visibleRemote(state, path, refreshKey);
 }
 
 export function StateMessage({ loading, error, empty, children }: {
