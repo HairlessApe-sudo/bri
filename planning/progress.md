@@ -5,6 +5,8 @@ Stage: 3 — platform foundation MVP, synthetic development implementation
 
 ## A13 — Evidence-grounded questions in the local workspace (2026-11-20)
 
+A13 accepted for the approved local synthetic-data-only scope; independent security review found no blockers.
+
 - Owner-approved local synthetic-only assignment; not an original roadmap work-package number. See [local knowledge questions](../architecture/local-knowledge-questions.md).
 - The isolated workspace connects to the existing A12 published reader through an authenticated, loopback-only read bridge. It reuses exact-version provenance and deterministic evidence matching; normal release behavior is unchanged. No new migration is required.
 - Local verification: 581 backend and 135 frontend tests passed without skips; both TypeScript checks and the optimized release build passed. The 30 unchanged migration checksums replayed unchanged on disposable PostgreSQL 16.2 with forced RLS on 57 tables. Independent security review found no blockers in implementation tree `7849fdb963377e23d98f321532e7fc102c8b96ca`; this progress entry is the only follow-up to that tree.
