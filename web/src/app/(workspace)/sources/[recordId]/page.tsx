@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { PageHeading, StateMessage, useRemote } from '@/components/data-state';
+import { SourceProvenance } from '@/components/source-provenance';
 import type { SourceReference } from '@/lib/api';
 
 export default function SourceDetailPage() {
@@ -21,8 +22,8 @@ export default function SourceDetailPage() {
             <div><dt>Extraction ID</dt><dd>{data.extraction_id}</dd></div>
             <div><dt>Extractor</dt><dd>{data.extractor_name} · {data.extractor_version}</dd></div>
             <div><dt>Source location</dt><dd className="breakable">{data.source_location}</dd></div>
-            <div className="hash-field"><dt>Content SHA-256</dt><dd className="mono breakable">{data.content_sha256}</dd></div>
           </dl>
+          <SourceProvenance source={data} showLegacyDigest />
           <div className="detail-footer"><span>Reference for record {data.record_id}</span><Link className="primary-link" href={`/knowledge/${encodeURIComponent(recordId)}`}>Return to record <span>→</span></Link></div>
         </section>
       </>}

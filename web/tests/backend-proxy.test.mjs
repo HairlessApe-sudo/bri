@@ -27,6 +27,14 @@ test('rejects mutation and unapproved backend routes as not found', () => {
   assert.throws(() => buildBackendRequest('/admin', new URLSearchParams(), config), isHiddenRoute);
 });
 
+test('published source reads still forward existing record IDs', () => {
+  for (const id of ['retention-policy', 'csv-report', 'csv', 'csv-intake']) {
+    const path = `/v1/sources/${id}`;
+    const result = buildBackendRequest(path, new URLSearchParams(), config);
+    assert.equal(result.url, `${config.BRI_API_ORIGIN}${path}`);
+  }
+});
+
 test('rejects unsupported and duplicated query parameters as bad requests', () => {
   const isBadRequest = (error) => error instanceof BackendRequestError && error.status === 400;
   assert.throws(() => buildBackendRequest('/v1/knowledge', new URLSearchParams('tenant_id=other'), config), isBadRequest);

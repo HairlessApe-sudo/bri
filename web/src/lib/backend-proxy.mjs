@@ -21,10 +21,22 @@ const READ_ROUTES = [
   /^\/v1\/knowledge$/,
   /^\/v1\/knowledge\/search$/,
   /^\/v1\/knowledge\/(?!proposals$)[A-Za-z0-9._~-]+$/,
-  /^\/v1\/sources\/[A-Za-z0-9._~-]+$/,
+  /^\/v1\/sources\/(?!(?:csv|csv-intake)$)[A-Za-z0-9._~-]+$/,
 ];
 
+const PUBLISHED_CSV = /^(\/v1\/(?:knowledge|sources)\/)(csv:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
+const LEGACY_CSV_SOURCE = /^\/v1\/sources\/(?:csv|csv-intake)$/;
 const DIRECTORY_LIST = '/v1/users';
+
+function isCanonicalCsvRead(path, pathname) {
+  const published = PUBLISHED_CSV.exec(path);
+  if (published) {
+    return pathname === undefined || pathname === `/api/bri${published[1]}${encodeURIComponent(published[2])}`;
+  }
+  // On the normal backend these exact GETs read provenance for legacy IDs.
+  // Do not point the proxy at staged intake or share these paths with a future GET collection.
+  return LEGACY_CSV_SOURCE.test(path) && (pathname === undefined || pathname === `/api/bri${path}`);
+}
 
 function backendOrigin(env, mode) {
   const fallback = mode === 'synthetic' ? 'http://127.0.0.1:8000' : '';
@@ -75,7 +87,8 @@ function validateBackendTarget(path, searchParams, mode, method, pathname = unde
   const isDirectoryRead = directory && mode === 'supabase' && path === normalized
     && (pathname === undefined || pathname === `/api/bri${path}`)
     && (normalized === DIRECTORY_LIST || isDirectoryUserId(userPath) || history || grants);
-  const isRead = method === 'GET' && (isDirectoryRead || READ_ROUTES.some((route) => route.test(normalized)));
+  const isRead = method === 'GET'
+    && (isDirectoryRead || isCanonicalCsvRead(path, pathname) || READ_ROUTES.some((route) => route.test(normalized)));
   const isSessionAction = normalized === '/v1/auth/session' && ['POST', 'DELETE'].includes(method);
   const isRecovery = normalized === '/v1/auth/recovery/invalidate' && method === 'POST';
   if (!isRead && !isSessionAction && !isRecovery) throw new BackendRequestError('Not found', 404);

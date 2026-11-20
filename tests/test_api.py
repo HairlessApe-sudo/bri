@@ -11,8 +11,31 @@ import unittest
 from fastapi.testclient import TestClient
 
 from bri.access.policy import Principal
-from bri.api.app import ApiSettings, DatabaseUnavailable, create_app
+from bri.api.app import ApiSettings, DatabaseUnavailable, _citation_response, _knowledge_item, _record_response, create_app
 from bri.api.database import Database, TenantSession, is_approved_app_target
+from bri.knowledge.query import EvidenceCitation, KnowledgeItem
+
+
+class CsvProvenanceProjectionTests(unittest.TestCase):
+    def test_published_csv_requires_and_projects_original_provenance(self):
+        row = ("csv:record", "tenant", "node", "worker", None, "Synthetic CSV", "csv:record",
+               "csv:record", "v1", "csv:record", "text", hashlib.sha256(b"text").hexdigest(),
+               "governed-csv", "1", "csv:lines=1-4")
+        with self.assertRaises(DatabaseUnavailable):
+            _knowledge_item(row + (None, None, None), governed_csv=True)
+        item = _knowledge_item(row + ("a" * 64, 1, 4), governed_csv=True)
+        self.assertEqual((item.original_sha256, item.csv_first_line, item.csv_last_line), ("a" * 64, 1, 4))
+        self.assertIsNone(_knowledge_item(row).original_sha256)  # ID spelling does not classify the row.
+
+    def test_optional_published_csv_fields_preserve_legacy_response(self):
+        item = KnowledgeItem("record", "tenant", "node", "approved", "Synthetic CSV", "v1", "lines 2–4", "text")
+        self.assertNotIn("original_sha256", _record_response(item).model_dump())
+        projected = _record_response(replace(item, original_sha256="a" * 64, csv_first_line=2, csv_last_line=4)).model_dump()
+        self.assertEqual((projected["original_sha256"], projected["csv_first_line"], projected["csv_last_line"]),
+                         ("a" * 64, 2, 4))
+        citation = EvidenceCitation("record", "Synthetic CSV", "v1", "lines 2–4", "text",
+                                    original_sha256="a" * 64, csv_first_line=2, csv_last_line=4)
+        self.assertEqual(_citation_response(citation).model_dump()["original_sha256"], "a" * 64)
 
 
 @unittest.skipUnless(

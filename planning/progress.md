@@ -3,6 +3,13 @@
 Last updated: 2026-11-20
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A12 — Governed CSV intake (2026-11-20)
+
+- Owner-approved local, synthetic-only AD-09 slice; A12 is not an original roadmap work package. See [governed CSV intake](../architecture/governed-csv-intake.md).
+- Migration `0030` adds private job and audit metadata, original-artifact evidence, and database-enforced independent review. No release role receives intake or worker execution. Published retrieval still requires exact-node `knowledge:read` and both explicit record and source-version allow decisions.
+- Local verification passed: 566 backend tests and 129 frontend tests, without failures or skips; TypeScript checking and the optimized build passed. Disposable PostgreSQL 16.2 verified 30 migration checksums, unchanged replay and forced RLS on 57 non-ledger tables. Independent security review found no blockers in implementation tree `267207ef7b86284066d5c48fbd01231c26e4b9b4`; this progress entry is the only follow-up to that tree.
+- Hosted execution and deployed ACLs, production storage and scanning, real-data retention governance, and Generic Data Disposition remain outside this assignment.
+
 ## A11.9 — Account administration closeout (2026-11-20)
 
 A11 accepted for the approved local scope; independent security review found no blockers in the delivered tree. Hosted identity-provider acceptance, production execution and deployed ACL verification remain outstanding. Generic Data Disposition remains deferred. Broader MVP and pilot acceptance are separate.

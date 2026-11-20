@@ -24,6 +24,9 @@ export type KnowledgeRecord = {
   source_version: string;
   extraction_id: string;
   content_sha256: string;
+  original_sha256?: string | null;
+  csv_first_line?: number | null;
+  csv_last_line?: number | null;
   extractor_name: string;
   extractor_version: string;
   source_location: string;

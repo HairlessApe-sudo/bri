@@ -32,6 +32,9 @@ class KnowledgeItem:
     extractor_name: str = ""
     extractor_version: str = ""
     current: bool = True
+    original_sha256: str | None = None
+    csv_first_line: int | None = None
+    csv_last_line: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +50,9 @@ class EvidenceCitation:
     content_sha256: str = ""
     extractor_name: str = ""
     extractor_version: str = ""
+    original_sha256: str | None = None
+    csv_first_line: int | None = None
+    csv_last_line: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +83,9 @@ def _citation(item: KnowledgeItem, excerpt: str) -> EvidenceCitation:
         content_sha256=item.content_sha256,
         extractor_name=item.extractor_name,
         extractor_version=item.extractor_version,
+        original_sha256=item.original_sha256,
+        csv_first_line=item.csv_first_line,
+        csv_last_line=item.csv_last_line,
     )
 
 

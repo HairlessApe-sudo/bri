@@ -159,7 +159,7 @@ def seed_approval_tenant(connect):
 )
 class ApprovalDatabase(unittest.TestCase):
     @classmethod
-    def setUpClass(cls, *, staged_account_write=None):
+    def setUpClass(cls, *, staged_account_write=None, before_csv_migration=None):
         if any(k.startswith("PG") for k in os.environ):
             raise RuntimeError(
                 "run disposable tests without inherited libpq environment"
@@ -237,6 +237,16 @@ class ApprovalDatabase(unittest.TestCase):
             patch.object(runner, "env_values", return_value=fake),
             patch.object(runner.psycopg, "connect", guarded),
         ):
+            if before_csv_migration is not None:
+                with tempfile.TemporaryDirectory(dir=cls.sock) as prefix:
+                    migrations = Path(prefix) / "db/migrations"
+                    migrations.mkdir(parents=True)
+                    for path in (runner.ROOT / "db/migrations").glob("[0-9]*_*.sql"):
+                        if path.name < "0030_":
+                            (migrations / path.name).symlink_to(path)
+                    with patch.object(runner, "ROOT", Path(prefix)), redirect_stdout(io.StringIO()):
+                        assert runner.main() == 0, "could not apply migration prerequisites"
+                before_csv_migration()
             for replay in (False, True):
                 log = io.StringIO()
                 with redirect_stdout(log):

@@ -62,7 +62,7 @@ User-provided baseline = direction in the initiating brief. Proposed = recommend
 - Dependencies: API compatibility, validation, migrations, search and cross-sector interoperability.
 
 ### AD-09 — Ingestion and connector execution
-- Status: Proposed: canonical connector contracts, quarantine, async idempotent jobs; connector code isolated from core domain.
+- Status: The owner approved [A12 local governed CSV intake](governed-csv-intake.md), a synthetic-only slice of the proposed connector contracts, quarantine and idempotent jobs. No hosted or real-data ingestion is approved.
 - Unresolved: push/pull mix, plugin execution, event protocol, malware/OCR services and connector packaging.
 - Dependencies: identity/secrets, network/egress, job system, data classification, source deletion signals.
 

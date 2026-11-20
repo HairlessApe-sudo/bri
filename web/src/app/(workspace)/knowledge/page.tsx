@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useState } from 'react';
 import { PageHeading, StateMessage, useRemote } from '@/components/data-state';
+import { SourceProvenance } from '@/components/source-provenance';
 import type { Citation, KnowledgeRecord, SearchResult } from '@/lib/api';
 
 function CitationRow({ citation }: { citation: Citation }) {
@@ -10,6 +11,7 @@ function CitationRow({ citation }: { citation: Citation }) {
     <div className="citation-title"><Link href={`/knowledge/${encodeURIComponent(citation.record_id)}`}>{citation.title}</Link><span className="verified-tag">Validated</span></div>
     <p className="citation-excerpt">“{citation.excerpt}”</p>
     <div className="citation-meta"><span>Version {citation.source_version}</span><span>{citation.source_location}</span><Link href={`/sources/${encodeURIComponent(citation.record_id)}`}>Source details →</Link></div>
+    <SourceProvenance source={citation} />
   </article>;
 }
 

@@ -205,7 +205,13 @@ class OrganizationStructureResponse(BaseModel):
     relationships: list[OrganizationRelationshipResponse]
 
 
-class KnowledgeRecordResponse(BaseModel):
+class PublishedCsvProvenance(BaseModel):
+    original_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    csv_first_line: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    csv_last_line: int | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class KnowledgeRecordResponse(PublishedCsvProvenance):
     model_config = ConfigDict(extra="forbid")
     record_id: str
     title: str
@@ -222,7 +228,7 @@ class KnowledgeRecordResponse(BaseModel):
     content: str
 
 
-class SourceReferenceResponse(BaseModel):
+class SourceReferenceResponse(PublishedCsvProvenance):
     model_config = ConfigDict(extra="forbid")
     record_id: str
     title: str
@@ -236,7 +242,7 @@ class SourceReferenceResponse(BaseModel):
     source_location: str
 
 
-class CitationResponse(BaseModel):
+class CitationResponse(PublishedCsvProvenance):
     model_config = ConfigDict(extra="forbid")
     record_id: str
     title: str
@@ -312,6 +318,27 @@ def _record_response(item: KnowledgeItem) -> KnowledgeRecordResponse:
         extractor_version=item.extractor_version,
         source_location=item.source_location,
         content=item.content,
+        original_sha256=item.original_sha256,
+        csv_first_line=item.csv_first_line,
+        csv_last_line=item.csv_last_line,
+    )
+
+
+def _source_response(item: KnowledgeItem) -> SourceReferenceResponse:
+    return SourceReferenceResponse(
+        record_id=item.record_id,
+        title=item.title,
+        source_id=item.source_id,
+        source_version_id=item.source_version_id,
+        source_version=item.source_version,
+        extraction_id=item.extraction_id,
+        content_sha256=item.content_sha256,
+        extractor_name=item.extractor_name,
+        extractor_version=item.extractor_version,
+        source_location=item.source_location,
+        original_sha256=item.original_sha256,
+        csv_first_line=item.csv_first_line,
+        csv_last_line=item.csv_last_line,
     )
 
 
@@ -328,6 +355,9 @@ def _citation_response(citation: EvidenceCitation) -> CitationResponse:
         extractor_version=citation.extractor_version,
         source_location=citation.source_location,
         excerpt=citation.excerpt,
+        original_sha256=citation.original_sha256,
+        csv_first_line=citation.csv_first_line,
+        csv_last_line=citation.csv_last_line,
     )
 
 
@@ -362,8 +392,11 @@ def _verified_content(row: tuple[Any, ...]) -> str:
     return content
 
 
-def _knowledge_item(row: tuple[Any, ...]) -> KnowledgeItem:
+def _knowledge_item(row: tuple[Any, ...], *, governed_csv: bool = False) -> KnowledgeItem:
     content = _verified_content(row)
+    original_digest, first_line, last_line = row[15:18] if governed_csv else (None, None, None)
+    if governed_csv and None in (original_digest, first_line, last_line):
+        raise DatabaseUnavailable("stored CSV evidence failed integrity verification")
     return KnowledgeItem(
         record_id=row[0],
         tenant_id=row[1],
@@ -379,6 +412,9 @@ def _knowledge_item(row: tuple[Any, ...]) -> KnowledgeItem:
         content_sha256=row[11],
         extractor_name=row[12],
         extractor_version=row[13],
+        original_sha256=original_digest,
+        csv_first_line=first_line,
+        csv_last_line=last_line,
     )
 
 
@@ -1151,18 +1187,7 @@ def create_app(
         require_permission(principal, "knowledge:read")
         for item in read_authorized_knowledge(session, principal):
             if item.record_id == record_id:
-                return SourceReferenceResponse(
-                    record_id=item.record_id,
-                    title=item.title,
-                    source_id=item.source_id,
-                    source_version_id=item.source_version_id,
-                    source_version=item.source_version,
-                    extraction_id=item.extraction_id,
-                    content_sha256=item.content_sha256,
-                    extractor_name=item.extractor_name,
-                    extractor_version=item.extractor_version,
-                    source_location=item.source_location,
-                )
+                return _source_response(item)
         raise HTTPException(status_code=404, detail="Source reference not found")
 
     def trusted_configuration_context(

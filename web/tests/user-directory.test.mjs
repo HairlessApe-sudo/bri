@@ -767,6 +767,76 @@ test('Next passes grants paths through without normalizing trailing slashes or p
   assert.equal(config.skipTrailingSlashRedirect, true);
 });
 
+test('the release Next handler preserves exact GETs for legacy CSV source IDs', async (t) => {
+  const settings = { BRI_UI_AUTH_MODE: 'supabase', BRI_API_ORIGIN: 'https://api.example.test' };
+  const previous = Object.entries(settings).map(([key]) => [key, process.env[key]]);
+  Object.assign(process.env, settings);
+  globalThis.directoryTestSession = () => ({ auth: {
+    getSession: async () => ({ data: { session: { access_token: 'fixture-session' } } }),
+  } });
+  t.after(() => {
+    delete globalThis.directoryTestSession;
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  const upstream = t.mock.method(globalThis, 'fetch', () => Response.json({}));
+  for (const recordId of ['csv', 'csv-intake']) {
+    const path = `/v1/sources/${recordId}`;
+    const response = await route.GET(new Request(`https://ui.example.test/api/bri${path}`), {
+      params: Promise.resolve({ path: ['v1', 'sources', recordId] }),
+    });
+    assert.equal(response.status, 200);
+    const [url, init] = upstream.mock.calls.at(-1).arguments;
+    assert.equal(url, `${settings.BRI_API_ORIGIN}${path}`);
+    assert.equal(init.method, 'GET');
+  }
+  assert.equal(upstream.mock.callCount(), 2);
+});
+
+test('the release Next handler denies A12 intake and noncanonical reads before session or upstream', async (t) => {
+  t.mock.method(globalThis, 'fetch', () => { throw new Error('Unexpected upstream'); });
+  const session = t.mock.fn(() => { throw new Error('Unexpected session lookup'); });
+  globalThis.directoryTestSession = session;
+  const previousMode = process.env.BRI_UI_AUTH_MODE;
+  t.after(() => {
+    delete globalThis.directoryTestSession;
+    if (previousMode === undefined) delete process.env.BRI_UI_AUTH_MODE; else process.env.BRI_UI_AUTH_MODE = previousMode;
+  });
+
+  for (const mode of ['supabase', 'synthetic']) {
+    process.env.BRI_UI_AUTH_MODE = mode;
+    const csvId = '01234567-89ab-4def-8123-456789abcdef';
+    const csvReads = ['knowledge', 'sources'].map((section) => `/v1/${section}/csv%3A${csvId}`);
+    for (const path of [
+      '/v1/sources/csv', '/v1/sources/csv-intake', ...csvReads,
+      '/v1/sources/csv/', '/v1/sources/%63sv', '/v1/sources/%2563sv', '/v1/%73ources/csv',
+      '/v1/sources/csv-intake/', '/v1/sources/csv%2Dintake',
+      '/v1/sources/csv/fixture-job', '/v1/sources/csv%2Ffixture-job',
+      '/v1/sources/csv-intake/fixture-job', '/v1/staged/sources/csv',
+      '/v1/knowledge/proposals', '/v1/knowledge/proposals/csv',
+      '/v1/knowledge/proposals/csv/fixture-proposal/decision', '/v1/knowledge/proposals/fixture-proposal/decision',
+      ...['knowledge', 'sources'].flatMap((section) => [
+        `csv:${csvId}`, `csv%3a${csvId}`, `csv%253A${csvId}`, `%63sv%3A${csvId}`,
+        `csv%3A${csvId}/`, `csv%3A${csvId}%2Fjob`, `other%3A${csvId}`, 'csv%3Ainvalid',
+        `csv%3A${csvId.toUpperCase()}`, `csv%3A${csvId.replace('-4def-', '-5def-')}`,
+        `csv%3A${csvId.replace('-8123-', '-7123-')}`,
+      ].map((suffix) => `/v1/${section}/${suffix}`)),
+    ]) {
+      const params = Promise.resolve({ path: path.slice(1).split('/').map(decodeURIComponent) });
+      const isExactRead = ['/v1/sources/csv', '/v1/sources/csv-intake', ...csvReads].includes(path);
+      for (const method of isExactRead ? ['POST', 'DELETE'] : ['GET', 'POST', 'DELETE']) {
+        const request = new Request(`https://ui.example.test/api/bri${path}`, { method });
+        const response = await route[method](request, { params });
+        assert.equal(response.status, 404, `${mode} ${method} ${path}`);
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+      }
+    }
+  }
+  assert.equal(session.mock.callCount(), 0);
+  assert.equal(globalThis.fetch.mock.callCount(), 0);
+});
+
 test('the release Next handler denies staged reads, history writes and synthetic history without session or upstream', async (t) => {
   const previousMode = process.env.BRI_UI_AUTH_MODE;
   const previousNodeEnv = process.env.NODE_ENV;

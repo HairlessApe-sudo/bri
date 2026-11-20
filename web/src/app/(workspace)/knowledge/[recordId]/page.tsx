@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { PageHeading, StateMessage, useRemote } from '@/components/data-state';
+import { SourceProvenance } from '@/components/source-provenance';
 import type { KnowledgeRecord } from '@/lib/api';
 
 export default function KnowledgeDetailPage() {
@@ -17,6 +18,7 @@ export default function KnowledgeDetailPage() {
         <article className="content-panel record-detail">
           <div className="detail-topline"><span className="verified-tag">{data.validation_state}</span><span>Scope · {data.scope_id}</span></div>
           <div className="record-content">{data.content}</div>
+          <SourceProvenance source={data} />
           <div className="detail-footer"><span>Record {data.record_id}</span><Link className="primary-link" href={`/sources/${encodeURIComponent(data.record_id)}`}>Inspect source provenance <span>→</span></Link></div>
         </article>
       </>}

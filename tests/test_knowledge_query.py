@@ -59,6 +59,14 @@ class KnowledgeAnswerTests(unittest.TestCase):
         self.assertEqual(citation.extractor_name, "synthetic-fixture")
         self.assertEqual(citation.extractor_version, "1")
 
+    def test_csv_citations_keep_original_digest_separate_from_extracted_digest(self):
+        item = replace(self.approved, content_sha256="a" * 64, original_sha256="b" * 64,
+                       csv_first_line=2, csv_last_line=5)
+        result = answer_question(self.principal, "How many years must employee files be retained?", [item])
+        citation = result.citations[0]
+        self.assertEqual((citation.original_sha256, citation.content_sha256), ("b" * 64, "a" * 64))
+        self.assertEqual((citation.csv_first_line, citation.csv_last_line), (2, 5))
+
     def test_excludes_unapproved_knowledge_before_matching(self):
         proposed = replace(self.approved, validation_state="proposed")
 
