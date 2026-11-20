@@ -271,7 +271,7 @@ class StagedPostgres(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch.dict(os.environ, BRI_APPROVAL_PG_BIN=os.environ['BRI_TEST_PG_BIN']):
-            pg.ApprovalDatabase.setUpClass.__func__(cls)
+            pg.ApprovalDatabase.setUpClass.__func__(cls, staged_account_write=pg.LIFECYCLE_WRITE)
         with cls.connect('bri_migrator') as db:
             db.execute('INSERT INTO bri.provider_event_source(issuer) VALUES (%s)', (ISSUER,))
 

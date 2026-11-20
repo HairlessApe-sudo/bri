@@ -38,6 +38,45 @@ APPROVAL_APP_ROUTINES = (
     "bri.read_mfa_reset_queue(text,uuid,uuid,text,integer,uuid,uuid)",
     "bri.can_request_mfa_reset(text,uuid,uuid,text,uuid)",
 )
+PROVISIONING_WRITE = "bri.request_user_provisioning(text,uuid,uuid,text,timestamptz,uuid,text,text,uuid)"
+LIFECYCLE_WRITE = "bri.change_user_lifecycle(text,uuid,uuid,text,uuid,text,bigint,text,text,timestamptz,uuid)"
+STAGED_ACCOUNT_WRITES = (PROVISIONING_WRITE, LIFECYCLE_WRITE)
+ACCOUNT_READS = (
+    "bri.status_user_provisioning(text,uuid,uuid,text,uuid)",
+    "bri.read_user_lifecycle(text,uuid,uuid,text,uuid)",
+)
+
+
+def assert_release_account_acls(db):
+    checks = unittest.TestCase()
+    with db.transaction():
+        db.execute("SET TRANSACTION READ ONLY")
+        denied = {
+            routine: db.execute(
+                "SELECT has_function_privilege(current_user,p.oid,'EXECUTE'), EXISTS ("
+                "SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl "
+                "WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE') "
+                "FROM pg_proc p WHERE p.oid=%s::regprocedure",
+                (routine,),
+            ).fetchone()
+            for routine in STAGED_ACCOUNT_WRITES
+        }
+        checks.assertEqual(denied, dict.fromkeys(STAGED_ACCOUNT_WRITES, (False, False)))
+        for routine in ACCOUNT_READS:
+            checks.assertEqual(db.execute(
+                "SELECT has_function_privilege(current_user,%s::regprocedure,'EXECUTE')",
+                (routine,),
+            ).fetchone(), (True,), routine)
+        for routine in STAGED_ACCOUNT_WRITES:
+            # No actor, tenant, evidence or valid write input. Require PostgreSQL's
+            # function ACL denial, not a matching SQLSTATE from inside the routine.
+            name, types = routine[:-1].split("(")
+            args = ",".join(f"NULL::{kind}" for kind in types.split(","))
+            with checks.assertRaises(psycopg.errors.InsufficientPrivilege) as denied_call, db.transaction():
+                db.execute(f"SELECT * FROM {name}({args})")
+            checks.assertEqual(denied_call.exception.sqlstate, "42501")
+            checks.assertEqual(denied_call.exception.diag.message_primary,
+                               f"permission denied for function {name.split('.')[1]}")
 
 
 def seed_approval_tenant(connect):
@@ -120,7 +159,7 @@ def seed_approval_tenant(connect):
 )
 class ApprovalDatabase(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls, *, staged_account_write=None):
         if any(k.startswith("PG") for k in os.environ):
             raise RuntimeError(
                 "run disposable tests without inherited libpq environment"
@@ -212,6 +251,7 @@ class ApprovalDatabase(unittest.TestCase):
             ).fetchall() == [(p.stem,) for p in files]
 
         with cls.connect("bri_app") as db:
+            assert_release_account_acls(db)
             for routine in APPROVAL_APP_ROUTINES:
                 assert db.execute(
                     "SELECT has_function_privilege(current_user,p.oid,'EXECUTE'), EXISTS ("
@@ -225,6 +265,10 @@ class ApprovalDatabase(unittest.TestCase):
             # Enable only these entry points inside disposable SQL/HTTP fixtures.
             routines = ", ".join(APPROVAL_APP_ROUTINES)
             db.execute(f"GRANT EXECUTE ON FUNCTION {routines} TO bri_app")
+            if staged_account_write is not None:
+                if staged_account_write not in STAGED_ACCOUNT_WRITES:
+                    raise AssertionError("unexpected staged account write")
+                db.execute(f"GRANT EXECUTE ON FUNCTION {staged_account_write} TO bri_app")
             db.execute(
                 "GRANT USAGE ON SCHEMA bri TO bri_approval_worker; GRANT EXECUTE ON FUNCTION "
                 "bri.approval_work(text,text,uuid,text,uuid[]) TO bri_approval_worker"

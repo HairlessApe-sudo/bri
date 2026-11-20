@@ -23,7 +23,7 @@ class UserLifecycleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch.dict(os.environ, BRI_APPROVAL_PG_BIN=os.environ['BRI_TEST_PG_BIN']):
-            fixtures.ApprovalDatabase.setUpClass.__func__(cls)
+            fixtures.ApprovalDatabase.setUpClass.__func__(cls, staged_account_write=fixtures.LIFECYCLE_WRITE)
         with cls.connect('bri_migrator') as db:
             db.execute('INSERT INTO bri.provider_event_source (issuer) VALUES (%s)', (ISSUER,))
 

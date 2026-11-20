@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
 import httpx
@@ -64,8 +65,29 @@ class DisabledApprovalRoutes(unittest.TestCase):
     os.getenv("BRI_APPROVAL_PG_BIN"), "requires private disposable PG16 binaries"
 )
 class StagedApprovalRoutes(unittest.TestCase):
-    setUpClass = classmethod(pg.ApprovalDatabase.setUpClass.__func__)
     connect = classmethod(pg.ApprovalDatabase.connect.__func__)
+
+    @classmethod
+    def setUpClass(cls):
+        pg.ApprovalDatabase.setUpClass.__func__(cls)
+        routines = (
+            "bri.approval_admin_request(text,text,uuid,text,uuid)",
+            "bri.approval_admin_decide(text,text,uuid,text)",
+        )
+        with cls.connect("bri_app") as db:
+            for routine in routines:
+                actual = db.execute(
+                    "SELECT p.prosecdef, has_function_privilege(current_user,p.oid,'EXECUTE'), "
+                    "has_function_privilege('bri_approval_worker',p.oid,'EXECUTE'), EXISTS ("
+                    "SELECT FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl "
+                    "WHERE acl.grantee=0 AND acl.privilege_type='EXECUTE') "
+                    "FROM pg_proc p WHERE p.oid=%s::regprocedure",
+                    (routine,),
+                ).fetchone()
+                if actual != (True, False, False, False):
+                    raise AssertionError((routine, actual))
+        with cls.connect("bri_migrator") as db:
+            db.execute("GRANT EXECUTE ON FUNCTION " + ", ".join(routines) + " TO bri_app")
 
     def setUp(self):
         self.t, self.actors = pg.seed_approval_tenant(self.connect)
@@ -117,9 +139,9 @@ class StagedApprovalRoutes(unittest.TestCase):
         }
         self.url = f"{PREFIX}/{self.key}"
 
-    def build_stage(self, *, administration=False):
+    def build_stage(self, *, administration=False, app_scope=None):
         return create_staged_approval_app(
-            app_scope=lambda: self.connect("bri_app"),
+            app_scope=app_scope or (lambda: self.connect("bri_app")),
             worker_scope=lambda: self.connect("bri_approval_worker"),
             private_socket=self.sock,
             auth_transport=self.auth,
@@ -247,6 +269,11 @@ class StagedApprovalRoutes(unittest.TestCase):
                     self.assertEqual(legacy.headers["Cache-Control"], "no-store")
             self.assertEqual(persisted(), before)
             self.assertEqual(self.lookups, lookups)
+            for _ in range(2):
+                decision = client.post(self.url + "/decision", json={"decision": "APPROVE"}, headers=reviewer)
+                self.assertEqual(decision.status_code, 200, decision.text)
+                self.assertEqual(decision.json()["state"], "EXPIRED")
+                self.assertEqual(persisted(), (("EXPIRED",), (before[1][0] + 1, before[1][1] + 1)))
 
     def test_administration_eligibility_requires_verified_directory_request_authority(self):
         endpoint = f"{PREFIX}/eligibility/{self.body['target']}"
@@ -266,6 +293,128 @@ class StagedApprovalRoutes(unittest.TestCase):
             db.execute("UPDATE bri.auth_sessions SET revoked_at=clock_timestamp() WHERE session_id=%s",
                        (self.actors[0][2],))
         self.assertEqual(self.client.get(endpoint, headers=requester).status_code, 403)
+
+    def test_administration_request_rechecks_directory_after_governance_wait(self):
+        self.exercise_administration_revocation(decide=False)
+
+    def test_administration_request_replays_when_visible_target_is_no_longer_eligible(self):
+        self.grant_administration(self.t, self.actors)
+        requester = self.headers(0)
+        target = self.actors[2][0]
+        stage = self.build_stage(administration=True)
+        with TestClient(stage, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as client:
+            created = client.post(PREFIX, json=self.body, headers=requester)
+            self.assertEqual(created.status_code, 200, created.text)
+            self.assertEqual(created.json()["state"], "PENDING")
+            with self.connect("postgres") as db:
+                db.execute("UPDATE bri.auth_principals SET status='suspended' WHERE principal_id=%s", (target,))
+
+            visible = client.get(f"{PREFIX}/queue/{self.key}", headers=requester)
+            self.assertEqual(visible.status_code, 200, visible.text)
+            self.assertEqual(visible.json()["target_id"], str(target))
+            eligible = client.get(f"{PREFIX}/eligibility/{target}", headers=requester)
+            self.assertEqual((eligible.status_code, eligible.json()), (200, {"eligible": False}))
+
+            replay = client.post(PREFIX, json=self.body, headers=requester)
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertEqual(replay.json(), {"approval_id": str(self.key), "state": "PENDING",
+                                             "correlation_id": replay.headers["X-Request-ID"]})
+            fresh = client.post(PREFIX, json={**self.body, "request_id": str(uuid4())}, headers=requester)
+            self.assertEqual((fresh.status_code, fresh.json()), (403, {"detail": "Approval denied"}))
+
+        correlation = UUID(created.headers["X-Request-ID"])
+        with self.connect("postgres") as db:
+            self.assertEqual(db.execute(
+                "SELECT state,correlation_id FROM bri.approval_events WHERE approval_id=%s", (self.key,),
+            ).fetchall(), [("PENDING", correlation)])
+            self.assertEqual(db.execute(
+                "SELECT decision FROM bri.approval_votes WHERE approval_id=%s", (self.key,),
+            ).fetchall(), [("REQUEST",)])
+            self.assertEqual(db.execute(
+                "SELECT request_id FROM bri.security_audit_events WHERE tenant_id=%s AND subject_principal_id=%s "
+                "AND event_type='auth.mfa.recovery_initiated'", (self.t, target),
+            ).fetchall(), [(correlation,)])
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM bri.security_audit_events WHERE request_id=%s", (replay.headers["X-Request-ID"],),
+            ).fetchone(), (0,))
+
+    def test_administration_decision_rechecks_queue_grant_after_governance_wait(self):
+        self.exercise_administration_revocation(decide=True)
+
+    def exercise_administration_revocation(self, *, decide):
+        self.grant_administration(self.t, self.actors)
+        if decide:
+            created = self.client.post(PREFIX, json=self.body, headers=self.headers(0))
+            self.assertEqual(created.status_code, 200, created.text)
+            preflight = f"{PREFIX}/queue/{self.key}"
+            endpoint, body = self.url + "/decision", {"decision": "APPROVE"}
+            role, permission, action = "queue", "account:mfa-reset:queue:read", "approval_decision"
+        else:
+            preflight = f"{PREFIX}/eligibility/{self.body['target']}"
+            endpoint, body = PREFIX, self.body
+            role, permission, action = "reset", "user:directory:read", "approval_request"
+        index = int(decide)
+        actor, user, session = self.actors[index]
+        headers = self.headers(index)
+        app_name = f"approval-wait-{self.key}"
+
+        def business_state(db):
+            return (
+                db.execute("SELECT state,reviewer FROM bri.privileged_approvals WHERE approval_id=%s",
+                           (self.key,)).fetchall(),
+                db.execute("SELECT actor,decision FROM bri.approval_votes WHERE approval_id=%s",
+                           (self.key,)).fetchall(),
+                db.execute("SELECT state,correlation_id FROM bri.approval_events WHERE approval_id=%s ORDER BY event_id",
+                           (self.key,)).fetchall(),
+                db.execute("SELECT operation_id FROM bri.credential_operations WHERE operation_id=%s",
+                           (self.key,)).fetchall(),
+            )
+
+        stage = self.build_stage(
+            administration=True,
+            app_scope=lambda: self.connect("bri_app", application_name=app_name),
+        )
+        with TestClient(stage, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as client:
+            visible = client.get(preflight, headers=headers)
+            self.assertEqual(visible.status_code, 200, visible.text)
+            self.assertIs(visible.json()["can_decide" if decide else "eligible"], True)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with self.connect("postgres") as writer:
+                    before = business_state(writer)
+                    writer.execute("DELETE FROM bri.role_permissions WHERE (tenant_id,role_id,permission)=(%s,%s,%s)",
+                                   (self.t, role, permission))
+                    # Replace this synthetic, unvoted session row under the same token ID
+                    # to isolate the grant check from ordinary grant-change invalidation.
+                    writer.execute("DELETE FROM bri.auth_sessions WHERE session_id=%s", (session,))
+                    writer.execute("INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) "
+                                   "VALUES (%s,%s,%s,clock_timestamp())", (actor, user, session))
+                    pending = pool.submit(client.post, endpoint, json=body, headers=headers)
+                    deadline = time.monotonic() + 5
+                    while True:
+                        writer.execute("SELECT pg_stat_clear_snapshot()")
+                        if writer.execute(
+                            "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE application_name=%s "
+                            "AND state='active' AND query LIKE 'SELECT bri.%%' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))",
+                            (app_name,),
+                        ).fetchone()[0]:
+                            break
+                        if pending.done() or time.monotonic() >= deadline:
+                            self.fail("approval command did not wait behind the permission revocation")
+                        time.sleep(0.01)
+                # Exiting the writer transaction commits before the waiting command resumes.
+                denied = pending.result(timeout=5)
+
+        self.assertEqual((denied.status_code, denied.json()), (403, {"detail": "Approval denied"}))
+        with self.connect("postgres") as db:
+            self.assertEqual(business_state(db), before)
+            self.assertEqual(db.execute(
+                "SELECT event_type,outcome,actor_principal_id,tenant_id,subject_principal_id "
+                "FROM bri.security_audit_events WHERE request_id=%s", (denied.headers["X-Request-ID"],),
+            ).fetchall(), [("auth.boundary." + action, "denied", actor, self.t, None)])
+        control = self.client.post(endpoint, json=body, headers=headers)
+        self.assertEqual(control.status_code, 200, control.text)
+        self.assertEqual(control.json()["state"], "APPROVED" if decide else "PENDING")
+        self.assertEqual(self.deletes, 0)
 
     def test_administration_mutations_require_visibility_without_consuming_replay(self):
         stage = self.build_stage(administration=True)
@@ -299,6 +448,7 @@ class StagedApprovalRoutes(unittest.TestCase):
         peer_request = client.post(PREFIX, json=self.body, headers=reviewer)
         self.assertEqual(peer_request.status_code, 200, peer_request.text)
         decision_url = f"{self.url}/decision"
+        self.assertEqual(client.post(decision_url, json={"decision": "APPROVE"}, headers=reviewer).status_code, 403)
         denial = client.post(decision_url, json={"decision": "REJECT"}, headers=requester)
         self.assertEqual(denial.status_code, 403)
         # Same otherwise-valid operation succeeds on the default, legacy A10

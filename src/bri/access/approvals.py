@@ -68,11 +68,14 @@ def _command(
     params: tuple,
     *,
     role: str = "bri_app",
+    read_committed: bool = False,
 ):
     with scope() as db:
         if db.info.transaction_status != TransactionStatus.IDLE:
             raise RuntimeError("approval requires its own transaction")
         with db.transaction():
+            if read_committed:
+                db.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
             if not db.execute(
                 "SELECT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname=current_user "
                 "AND rolname=session_user AND rolname=%s AND NOT rolsuper AND NOT rolbypassrls "
@@ -110,6 +113,26 @@ class ApprovalRepository:
     def status(self, ctx: ApprovalContext, approval_id: UUID) -> str:
         return _command(
             self._scope, ctx, "SELECT bri.approval_status(%s,%s,%s)", (approval_id,)
+        )[0]
+
+    def request_with_visibility(
+        self, ctx: ApprovalContext, *, target: UUID, reason: str, request_id: UUID
+    ) -> str:
+        return _command(
+            self._scope,
+            ctx,
+            "SELECT bri.approval_admin_request(%s,%s,%s,%s,%s)",
+            (target, reason, request_id),
+            read_committed=True,
+        )[0]
+
+    def decide_with_visibility(self, ctx: ApprovalContext, approval_id: UUID, decision: str) -> str:
+        return _command(
+            self._scope,
+            ctx,
+            "SELECT bri.approval_admin_decide(%s,%s,%s,%s)",
+            (approval_id, decision),
+            read_committed=True,
         )[0]
 
 

@@ -31,7 +31,7 @@ class UserDeactivationTests(unittest.TestCase):
     def setUpClass(cls):
         # Applies and verifies the complete checksummed ledger, then proves replay is a no-op.
         with patch.dict(os.environ, BRI_APPROVAL_PG_BIN=os.environ['BRI_TEST_PG_BIN']):
-            fixtures.ApprovalDatabase.setUpClass.__func__(cls)
+            fixtures.ApprovalDatabase.setUpClass.__func__(cls, staged_account_write=fixtures.LIFECYCLE_WRITE)
         with cls.connect('bri_app') as db:
             for routine in (*ROUTINES, *delegation.ROUTINES):
                 assert db.execute("SELECT has_function_privilege(current_user,%s,'EXECUTE')",

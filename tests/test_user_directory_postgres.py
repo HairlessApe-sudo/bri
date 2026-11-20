@@ -111,10 +111,62 @@ class UserDirectoryTests(unittest.TestCase):
         response = self.get()
         self.assertEqual(response.status_code, 200, response.text)
         expected = [
-            {'id': str(actor[0]), 'display_name': None, 'status': 'active', 'role': role, 'mfa_status': 'unknown'}
+            {'id': str(actor[0]), 'display_name': None, 'status': 'active', 'role': role,
+             'mfa_status': 'unknown', 'can_view_grants': False}
             for actor, role in ((self.ordinary, 'user'), (self.superuser, 'superuser'))
         ]
         self.assertEqual(response.json(), {'items': sorted(expected, key=lambda item: item['id']), 'has_more': False})
+
+    def test_grants_entry_matches_a11_7_authority_not_visible_grants(self):
+        self.admin = self.grant_directory()
+        grants_url = f'{PATH}/{self.ordinary[0]}/grants'
+
+        def overview(actor=None):
+            response = self.get(actor=actor)
+            self.assertEqual(response.status_code, 200, response.text)
+            rows = response.json()['items']
+            self.assertCountEqual([row['id'] for row in rows], [str(self.ordinary[0]), str(self.superuser[0])])
+            for row in rows:
+                self.assertEqual(set(row), {'id', 'display_name', 'status', 'role', 'mfa_status', 'can_view_grants'})
+            return [row['can_view_grants'] for row in rows]
+
+        self.assertEqual(overview(), [False, False])
+        self.assertEqual(self.get(grants_url).status_code, 403)
+        principal, uid, _ = self.admin
+
+        def refresh(db):
+            self.admin = (principal, uid, uuid4())
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', self.admin)
+
+        with self.connect('postgres') as db:
+            db.execute("INSERT INTO bri.org_nodes VALUES (%s,'leaf','team','Leaf','root')", (self.tenant,))
+            for role, permission, actor, scope in (
+                ('grants', 'account:grants:read', self.admin, 'root'),
+                ('target-read', 'knowledge:read', self.superuser, 'root'),
+                ('view-root', 'organisation:read', self.admin, 'root'),
+            ):
+                db.execute('INSERT INTO bri.app_roles VALUES (%s,%s,%s)', (self.tenant, role, role))
+                db.execute('INSERT INTO bri.role_permissions VALUES (%s,%s,%s)', (self.tenant, role, permission))
+                db.execute('INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id) '
+                           'VALUES (%s,%s,%s,%s)', (self.tenant, actor[0], role, scope))
+            refresh(db)
+        self.assertEqual(overview(), [True, True])
+        empty = self.get(grants_url)
+        nonempty = self.get(f'{PATH}/{self.superuser[0]}/grants')
+        self.assertEqual(empty.status_code, 200, empty.text)
+        self.assertEqual(nonempty.status_code, 200, nonempty.text)
+        self.assertEqual(empty.json()['assigned'], [])
+        self.assertEqual(len(nonempty.json()['assigned']), 1)
+
+        stale = self.database.resolve_authenticated_principal(str(uid), ISSUER, str(uid))
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_role_assignments SET scope_node_id='leaf' "
+                       "WHERE tenant_id=%s AND principal_id=%s AND role_id='grants'", (self.tenant, principal))
+            refresh(db)
+        with patch.object(type(self.database), 'resolve_authenticated_principal', return_value=stale):
+            self.assertEqual(overview(), [False, False])
+            self.assertEqual(self.get(grants_url).status_code, 403)
 
     def test_scoped_grant_cannot_be_promoted_by_runtime_topology_edits(self):
         with self.connect('postgres') as db:
@@ -182,6 +234,8 @@ class UserDirectoryTests(unittest.TestCase):
         self.admin = self.grant_directory()
         for query in ('q=a&q=b', 'limit=1&limit=1', 'offset=0&offset=0', 'tenant_id=elsewhere', 'role=admin',
                       'principal_id=other', 'limit=0', 'limit=101', 'offset=-1', 'offset=10001', 'q=%00',
+                      'status=deleted', 'status=', 'status=active&status=active',
+                      'role=user&role=user', 'mfa_status=Verified', 'mfa_status=unknown&mfa_status=unknown',
                       'q=' + 'x' * 129):
             with self.subTest(query=query):
                 self.assertEqual(self.get(f'{PATH}?{query}').status_code, 400)
@@ -189,8 +243,40 @@ class UserDirectoryTests(unittest.TestCase):
         headers = self.headers(self.admin) | {'X-Tenant-Id': self.foreign}
         self.assertEqual(self.client.get(PATH, headers=headers).status_code, 400)
         operations = self.client.get('/openapi.json').json()['paths']
-        parameters = operations[PATH]['get']['parameters']
-        self.assertEqual({item['name'] for item in parameters if item['in'] == 'query'}, {'q', 'limit', 'offset'})
+        parameters = {item['name']: item['schema'] for item in operations[PATH]['get']['parameters']
+                      if item['in'] == 'query'}
+        self.assertEqual(set(parameters),
+                         {'q', 'limit', 'offset', 'status', 'role', 'mfa_status'})
+        self.assertCountEqual(parameters['status']['enum'], ['pending', 'active', 'suspended', 'deactivated'])
+        self.assertCountEqual(parameters['role']['enum'], ['user', 'superuser'])
+        self.assertCountEqual(parameters['mfa_status']['enum'], ['verified', 'unknown'])
+
+    def test_combined_filters_apply_before_limit_and_offset(self):
+        self.admin = self.grant_directory()
+        decoy, first, second = sorted(self.seed_account(status='pending') for _ in range(3))
+        wrong_role = self.seed_account(role='superuser', status='pending')
+        with self.connect('postgres') as db:
+            for actor in (first, second, wrong_role, self.ordinary, self.foreign_actors[2]):
+                db.execute('UPDATE bri.auth_principals SET display_name=%s WHERE principal_id=%s',
+                           ('Account %_ Label', actor[0]))
+            db.execute("UPDATE bri.auth_principals SET display_name='Account XX Label' WHERE principal_id=%s",
+                       (decoy[0],))
+        self.observe(self.ordinary, valid=True)
+        params = {'status': 'pending', 'role': 'user', 'mfa_status': 'unknown', 'q': '%_', 'limit': 1}
+        for offset, actor in enumerate((first, second)):
+            response = self.get(params=params | {'offset': offset})
+            self.assertEqual(response.status_code, 200, response.text)
+            page = response.json()
+            self.assertEqual(([row['id'] for row in page['items']], page['has_more']),
+                             ([str(actor[0])], offset == 0))
+        for filters, ids in (({'status': 'active', 'mfa_status': 'verified'}, [str(self.ordinary[0])]),
+                             ({'mfa_status': 'verified'}, []),
+                             ({'role': 'superuser'}, [str(wrong_role[0])]),
+                             ({'q': str(second[0]).upper()}, [str(second[0])]),
+                             ({'q': str(self.foreign_actors[2][0])}, [])):
+            response = self.get(params=params | filters)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([row['id'] for row in response.json()['items']], ids)
 
     def test_mfa_evidence_must_be_unexpired_and_match_the_active_link(self):
         self.admin = self.grant_directory()
@@ -256,6 +342,9 @@ class UserDirectoryTests(unittest.TestCase):
                 'id': str(actor[0]), 'display_name': None, 'status': status,
                 'role': 'user', 'mfa_status': 'unknown',
             })
+            page = self.get(params={'status': status}).json()
+            self.assertEqual(([row['id'] for row in page['items']], page['has_more']),
+                             ([str(actor[0])], False))
 
     def test_no_runtime_role_catalog_escalation_or_profile_write(self):
         with self.connect('postgres') as db:
@@ -286,18 +375,32 @@ class UserDirectoryTests(unittest.TestCase):
     def test_direct_sql_rechecks_context_session_principal_and_scope(self):
         self.admin = self.grant_directory()
         principal, user, sid = self.admin
-        sql = 'SELECT id FROM bri.read_user_directory(%s,%s,%s,%s,NULL,NULL,NULL,25,0)'
+        legacy = 'SELECT * FROM bri.read_user_directory(%s,%s,%s,%s,NULL,NULL,NULL,25,0)'
+        overview = 'SELECT * FROM bri.read_user_directory_overview(%s,%s,%s,%s,NULL,NULL,25,0,NULL,NULL,NULL)'
+        binding = (self.tenant, principal, sid, ISSUER)
         with self.connect('bri_app') as db:
             db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
-            with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
-                db.execute(sql, (self.tenant, principal, sid, ISSUER))
+            for sql in (legacy, overview):
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                    db.execute(sql, binding)
             db.execute("SELECT set_config('bri.tenant_id',%s,true),set_config('bri.auth_user_id',%s,true)",
                        (self.tenant, str(user)))
-            self.assertEqual({row[0] for row in db.execute(sql, (self.tenant, principal, sid, ISSUER))},
-                             {self.ordinary[0], self.superuser[0]})
-            for args in ((self.foreign, principal, sid, ISSUER), (self.tenant, self.peer[0], sid, ISSUER),
-                         (self.tenant, principal, uuid4(), ISSUER), (self.tenant, principal, sid, ISSUER + '/wrong')):
-                with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
+            expected = [(actor[0], None, 'active', role, 'unknown')
+                        for actor, role in ((self.ordinary, 'user'), (self.superuser, 'superuser'))]
+            self.assertEqual(db.execute(legacy, binding).fetchall(), sorted(expected))
+            self.assertEqual(db.execute(overview, binding).fetchall(), [(*row, False) for row in sorted(expected)])
+            for sql in (legacy, overview):
+                for args in ((self.foreign, principal, sid, ISSUER), (self.tenant, self.peer[0], sid, ISSUER),
+                             (self.tenant, principal, uuid4(), ISSUER), (self.tenant, principal, sid, ISSUER + '/wrong')):
+                    with self.assertRaises(psycopg.errors.InsufficientPrivilege), db.transaction():
+                        db.execute(sql, args)
+            for sql, args in (
+                ('SELECT bri.has_account_current_grants_authority(%s,%s,%s)', binding[:3]),
+                ('SELECT * FROM bri.read_user_directory_page(%s,%s,%s,%s,NULL,NULL,NULL,25,0,NULL,NULL,NULL)',
+                 binding),
+            ):
+                with self.assertRaisesRegex(psycopg.errors.InsufficientPrivilege,
+                                            'permission denied for function'), db.transaction():
                     db.execute(sql, args)
             self.assertEqual(db.execute('SELECT principal_id FROM bri.auth_principals').fetchall(), [(principal,)])
             self.assertEqual(db.execute('SELECT principal_id FROM bri.auth_tenant_memberships').fetchall(), [(principal,)])

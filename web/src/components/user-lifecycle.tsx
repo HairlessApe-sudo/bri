@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type FormEvent } from 'react';
 import { DirectoryAccountFields, DirectoryDetail } from '@/components/user-directory-view';
 import type { DirectoryUser } from '@/lib/api';
 import {
-  createLifecycleFlow, initialLifecycleView, lifecycleActions, lifecycleReasons, permittedLifecycleActions,
+  createLifecycleFlow, lifecycleActions, lifecycleReasons, permittedLifecycleActions,
   type LifecycleTransport, type LifecycleView,
 } from '@/lib/user-lifecycle';
 
@@ -62,8 +62,9 @@ export function LifecyclePanel({ view, flow }: { view: LifecycleView; flow: Flow
 }
 
 function StagedLifecycle({ id, transport }: { id: string; transport: LifecycleTransport }) {
-  const [view, show] = useState(initialLifecycleView);
-  const [flow] = useState(() => createLifecycleFlow(id, transport, show));
+  const flow = useMemo(() => createLifecycleFlow(id, transport), [id, transport]);
+  useLayoutEffect(flow.bind, [flow]);
+  const view = useSyncExternalStore(flow.subscribe, flow.getSnapshot, flow.getSnapshot);
   useEffect(() => { void flow.refresh(); }, [flow]);
   return <LifecyclePanel view={view} flow={flow} />;
 }

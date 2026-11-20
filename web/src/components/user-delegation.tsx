@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useLayoutEffect, useMemo, useSyncExternalStore, type FormEvent } from 'react';
 import { DirectoryDetail } from '@/components/user-directory-view';
 import type { DirectoryUser } from '@/lib/api';
-import { createDelegationFlow, delegationPermissions, initialDelegationView,
+import { createDelegationFlow, delegationCatalogKey, delegationPermissions, readDelegationCatalog,
   type DelegationNode, type DelegationTransport, type DelegationView } from '@/lib/user-delegation';
 
 type Flow = ReturnType<typeof createDelegationFlow>;
@@ -61,9 +61,13 @@ export function DelegationPanel({ view, nodes, flow }: {
 }
 
 function StagedDelegation({ id, nodes, transport }: { id: string; nodes: readonly DelegationNode[]; transport: DelegationTransport }) {
-  const [view, show] = useState(initialDelegationView);
-  const [flow] = useState(() => createDelegationFlow(id, nodes, transport, show));
-  return <DelegationPanel view={view} nodes={nodes} flow={flow} />;
+  // Recompute from values, including edits to a reused array or node object.
+  const key = delegationCatalogKey(nodes);
+  const catalog = useMemo(() => readDelegationCatalog(key), [key]);
+  const flow = useMemo(() => createDelegationFlow(id, catalog, transport), [id, catalog, transport]);
+  useLayoutEffect(flow.bind, [flow]);
+  const view = useSyncExternalStore(flow.subscribe, flow.getSnapshot, flow.getSnapshot);
+  return <DelegationPanel view={view} nodes={catalog} flow={flow} />;
 }
 
 // Local/test harness only. The release directory never imports this entry point.

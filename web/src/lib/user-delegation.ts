@@ -1,4 +1,5 @@
 import { isDirectoryUserId } from '@/lib/user-directory.mjs';
+import { createUserAdminStore } from '@/lib/user-admin-context';
 
 export const delegationPermissions = {
   'organisation:read': 'Organisation read',
@@ -7,7 +8,7 @@ export const delegationPermissions = {
 type Permission = keyof typeof delegationPermissions;
 type Action = 'grant' | 'revoke';
 type GrantState = { version: string; granted: boolean };
-export type DelegationNode = { id: string; label: string };
+export type DelegationNode = Readonly<{ id: string; label: string }>;
 export type DelegationTransport = (path: string, init: RequestInit) => Promise<Response>;
 export type DelegationView = {
   node: string;
@@ -18,6 +19,18 @@ export type DelegationView = {
   error?: string;
 };
 export const initialDelegationView: DelegationView = { node: '', permission: '', phase: 'idle', state: null, action: null };
+
+// Exact IDs and labels define the catalog; input array identity and order do not.
+export function delegationCatalogKey(nodes: readonly DelegationNode[]) {
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  const entries = nodes.map(({ id, label }) => [id, label] as const);
+  return JSON.stringify(entries.sort(([a, x], [b, y]) => compare(a, b) || compare(x, y)));
+}
+
+export function readDelegationCatalog(key: string): readonly DelegationNode[] {
+  const entries: [string, string][] = JSON.parse(key);
+  return Object.freeze(entries.map(([id, label]) => Object.freeze({ id, label })));
+}
 
 function isGrantState(value: unknown): value is GrantState {
   return !!value && typeof value === 'object' && Object.keys(value).length === 2 &&
@@ -41,59 +54,64 @@ async function failureMessage(response: Response, saving: boolean) {
 }
 
 // Staged only. The injected transport, not the browser, determines authority.
-export function createDelegationFlow(id: string, nodes: readonly DelegationNode[], transport: DelegationTransport, show: (view: DelegationView) => void) {
+export function createDelegationFlow(id: string, nodes: readonly DelegationNode[], transport: DelegationTransport, show?: (view: DelegationView) => void) {
   if (!isDirectoryUserId(id)) throw new Error('Invalid user ID');
   if (typeof transport !== 'function') throw new Error('A staged delegation transport is required');
   const path = `/v1/users/${id}/delegation`;
   const nodeIds = new Set(nodes.map((node) => node.id));
-  let view = initialDelegationView;
-  const busy = () => view.phase === 'loading' || view.phase === 'saving';
-  function update(next: Partial<DelegationView>) {
-    view = { ...view, ...next };
-    show(view);
-  }
+  const { getSnapshot, subscribe, update, begin, bind } = createUserAdminStore(initialDelegationView, show);
+  const busy = () => getSnapshot().phase === 'loading' || getSnapshot().phase === 'saving';
 
   function choose(node: string, permission: string) {
+    const view = getSnapshot();
     if (busy() || (node !== '' && !nodeIds.has(node)) || (permission !== '' && !Object.hasOwn(delegationPermissions, permission))) return;
     if (node === view.node && permission === view.permission) return;
     update({ ...initialDelegationView, node, permission: permission as DelegationView['permission'], error: undefined });
   }
 
   async function request(target: string, init: RequestInit, change?: { action: Action; version: string }) {
-    update({ phase: change ? 'saving' : 'loading', action: null, error: undefined });
+    const signal = begin({ phase: change ? 'saving' : 'loading', action: null, error: undefined });
+    // Publishing the busy view can synchronously retire this context.
+    if (signal === null || signal?.aborted) return;
     let error = change ? 'Could not confirm the change. Reload the grant state before trying again.'
       : 'Could not load the grant state. Reload it to try again.';
     let status: number | undefined;
     try {
-      const response = await transport(target, init);
+      const response = await transport(target, signal ? { ...init, signal } : init);
+      if (signal?.aborted) return;
       status = response.status;
       if (!response.ok) {
         error = await failureMessage(response, !!change) ?? error;
         throw new Error('Delegation request failed');
       }
       const result: unknown = await response.json();
+      if (signal?.aborted) return;
       if (!isGrantState(result) || (change && (result.version === change.version || result.granted !== (change.action === 'grant')))) {
         throw new Error('Invalid delegation response');
       }
       update({ phase: 'ready', state: result });
     } catch {
+      if (signal?.aborted) return;
       const unavailable = status === 401 || status === 403 || status === 404;
-      update({ phase: 'refresh-required', state: unavailable ? null : view.state, error });
+      update({ phase: 'refresh-required', state: unavailable ? null : getSnapshot().state, error });
     }
   }
 
   async function refresh() {
+    const view = getSnapshot();
     if (busy() || !view.node || !view.permission) return;
     const params = new URLSearchParams({ node: view.node, permission: view.permission });
     await request(`${path}?${params}`, { method: 'GET' });
   }
 
   function select(action: Action | null) {
+    const view = getSnapshot();
     if (view.phase !== 'ready' || !view.state || (action !== null && action !== (view.state.granted ? 'revoke' : 'grant'))) return;
     update({ action, error: undefined });
   }
 
   async function submit(action: Action, confirmed: boolean) {
+    const view = getSnapshot();
     const { node, permission, state } = view;
     if (view.phase !== 'ready' || !state || action !== view.action || action !== (state.granted ? 'revoke' : 'grant')) return;
     if (confirmed !== true) {
@@ -104,5 +122,5 @@ export function createDelegationFlow(id: string, nodes: readonly DelegationNode[
       body: JSON.stringify({ node, permission, action, expected_version: state.version }) }, { action, version: state.version });
   }
 
-  return { choose, refresh, select, submit };
+  return { getSnapshot, subscribe, bind, choose, refresh, select, submit };
 }

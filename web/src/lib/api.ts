@@ -40,7 +40,8 @@ export type DirectoryUser = {
   role: 'user' | 'superuser';
   mfa_status: 'verified' | 'unknown';
 };
-export type DirectoryUserPage = { items: DirectoryUser[]; has_more: boolean };
+export type DirectoryUserRow = DirectoryUser & { can_view_grants: boolean };
+export type DirectoryUserPage = { items: DirectoryUserRow[]; has_more: boolean };
 
 export async function fetchApi<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { headers: { accept: 'application/json' }, cache: 'no-store', signal });

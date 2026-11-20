@@ -227,11 +227,10 @@ def _router(principal_dependency, stage):
     @router.post("", response_model=ApprovalReply)
     def create(body: CreateApproval, bound=context_dep):
         ctx = require(bound, "user:mfa_reset:request")
-        if stage.mfa_reset_administration:
-            reader_for(*bound).require_visible_target(body.target)
-        state = stage.repo.request(
-            ctx, target=body.target, reason=body.reason, request_id=body.request_id
+        command = (
+            stage.repo.request_with_visibility if stage.mfa_reset_administration else stage.repo.request
         )
+        state = command(ctx, target=body.target, reason=body.reason, request_id=body.request_id)
         return ApprovalReply(
             approval_id=body.request_id, state=state, correlation_id=ctx.correlation_id
         )
@@ -239,11 +238,10 @@ def _router(principal_dependency, stage):
     @router.post("/{approval_id}/decision", response_model=ApprovalReply)
     def decide(approval_id: UUID, body: DecideApproval, bound=context_dep):
         ctx = require(bound, "user:mfa_reset:decide")
-        if stage.mfa_reset_administration and not reader_for(*bound).queue(1, item=approval_id):
-            # A visible projection is required, not a true can_decide hint.
-            # A10 still owns replay, expiry and distinct-person enforcement.
-            raise PermissionError("Approval denied")
-        state = stage.repo.decide(ctx, approval_id, body.decision)
+        command = (
+            stage.repo.decide_with_visibility if stage.mfa_reset_administration else stage.repo.decide
+        )
+        state = command(ctx, approval_id, body.decision)
         return ApprovalReply(
             approval_id=approval_id, state=state, correlation_id=ctx.correlation_id
         )

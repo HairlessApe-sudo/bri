@@ -1,0 +1,24 @@
+# A11 consolidated local acceptance
+
+Scope: the [original A11 brief](assignments-10-11.md#a11--client-user-administration-gated-on-accepted-a10) and its explicitly approved subdivisions. A11.9 is the final local closeout, not an original numbered assignment or approval to deploy. This matrix records the acceptance scope; the consolidated verdict depends on final integrated verification and independent review.
+
+| Original requirement | Implemented workflow and boundary | Acceptance evidence |
+| --- | --- | --- |
+| List, search, filter and inspect ordinary accounts | Directory 0017 and the closeout overview; explicit directory authority, same-tenant ordinary targets, bounded search and pagination, safe lifecycle, class and MFA fields. | Directory API, two-tenant PostgreSQL and overview/proxy tests. |
+| Safe grants and pending actions in the overview | Link to the separately authorized A11.7 panel; directory-authorized pending setup indicator; independent entry point to the existing staged MFA reset queue. No merged queue, permission metadata, or hidden counts. | Grants visibility and overview tests, including denial and empty authorized results. |
+| Create accounts and activate only the verified invitee | Private provisioning and activation under 0018; one client membership, no protected access during setup, secure enrollment, durable retry/reconciliation rules. | Provisioning API and PostgreSQL tests for exact binding, duplicates, concurrency, uncertain outcomes and atomic audit; provider mocked. |
+| Edit profile, suspend and reactivate | 0019 staged lifecycle mutations; explicit grants and optimistic versions. Reactivation preserves independent holds and requires new primary/MFA evidence. | Lifecycle API, PostgreSQL and context tests, including session restart denial. |
+| Assign and revoke only permitted grants | 0020–0021 exact-node delegation of the two approved read grants; no broader role editor. Knowledge record/version restrictions still apply. | Delegation and knowledge authorization tests, including rollback, concurrent updates and current record/version restrictions. |
+| Deactivate safely and preserve references and audit | 0022–0023 terminal BRI deactivation; atomically retires assignments and sessions, retains identity and history, no ordinary restoration. | Deactivation API and PostgreSQL tests, including concurrent session start, retirement and rollback. |
+| View administration history and grants | 0024–0025 closed histories and current-grants projections; separate authority, independent actor/scope visibility, stable history pagination and no raw audit. | History and current grants API, proxy and two-tenant PostgreSQL tests. |
+| Request and review a dual-control MFA reset | 0026 staged request, decision, and separate read-only queue. A10 owns signed step-up, two-person decisions, expiry, replay, and worker reconciliation. Approval is not removal or restored access. | A10 and staged approval regressions for expiry, stale MFA, denial, concurrency, replay and worker separation; provider mocked. |
+| Server-side authorization, transactional audit, invalidation and forced RLS | Existing tenant, exact-scope and governance boundaries; closeout removes staged write execution from release ACLs and checks A11.8 visibility under A10's governance lock before mutation. | Disposable restricted-role ACL tests before test-only grants; revocation-race tests; migration ledger, catalog and regression runs. |
+| No irreversible erasure before separate policy | Safe deactivation satisfies the A11 alternative. Deletion requests, restoration, erasure and generic Data Disposition remain explicitly deferred. | See the A11 brief and AD-13 in the decision register. |
+
+## Consolidated verification
+
+The integrated local run passed 523 backend and 122 frontend tests with no skips, including two-tenant integration under `bri_app`. TypeScript and the optimized build passed. All 29 migration checksums matched, replay was a no-op, and forced RLS remained enabled on all 52 non-ledger tables. The local acceptance decision is gated on independent review of this exact implementation.
+
+## Separate hosted release dependencies
+
+The isolated local stages are not enabled in the release API or proxy. No authority is seeded. Hosted acceptance needs a separately approved provider project and verification of invitation-to-subject binding, provider-signed TOTP evidence, factor removal, ambiguous outcomes, trusted event delivery and controlled re-enrollment. It also needs isolated worker credentials and a trusted production invocation path with effective deployed ACLs verified. Knowledge rollout still requires consistent record/version authorization and a policy for retiring grants from ineligible targets. These are not accepted by local test results.

@@ -1,4 +1,4 @@
-import { DIRECTORY_MAX_OFFSET, DIRECTORY_MAX_QUERY, isDirectoryUserId, isHistoryCursor } from './user-directory.mjs';
+import { DIRECTORY_FILTERS, DIRECTORY_MAX_OFFSET, DIRECTORY_MAX_QUERY, isDirectoryUserId, isHistoryCursor } from './user-directory.mjs';
 
 // Include encoded aliases in the development log and auth-refresh exclusions.
 export const backendProxyPrefix = /^\/(?:a|%61)(?:p|%70)(?:i|%69)(?:\/|%2f)(?:b|%62)(?:r|%72)(?:i|%69)(?:[/?]|%2f|$)/i;
@@ -65,13 +65,15 @@ export function resolveUiAuthMode(env = process.env) {
   return mode;
 }
 
-function validateBackendTarget(path, searchParams, mode, method) {
+function validateBackendTarget(path, searchParams, mode, method, pathname = undefined) {
   const normalized = `/${String(path).replace(/^\/+|\/+$/g, '')}`;
   const directory = normalized === DIRECTORY_LIST || normalized.startsWith(`${DIRECTORY_LIST}/`);
   const userPath = normalized.slice(DIRECTORY_LIST.length + 1);
   const history = directory && userPath.endsWith('/history') && isDirectoryUserId(userPath.slice(0, -'/history'.length));
   const grants = directory && userPath.endsWith('/grants') && isDirectoryUserId(userPath.slice(0, -'/grants'.length));
+  // Catch-all params are decoded; the original URL must also match the literal path.
   const isDirectoryRead = directory && mode === 'supabase' && path === normalized
+    && (pathname === undefined || pathname === `/api/bri${path}`)
     && (normalized === DIRECTORY_LIST || isDirectoryUserId(userPath) || history || grants);
   const isRead = method === 'GET' && (isDirectoryRead || READ_ROUTES.some((route) => route.test(normalized)));
   const isSessionAction = normalized === '/v1/auth/session' && ['POST', 'DELETE'].includes(method);
@@ -85,7 +87,8 @@ function validateBackendTarget(path, searchParams, mode, method) {
 
   const params = new URLSearchParams();
   for (const [key, value] of searchParams.entries()) {
-    const allowed = normalized === DIRECTORY_LIST ? ['q', 'limit', 'offset'].includes(key)
+    const filter = normalized === DIRECTORY_LIST && Object.hasOwn(DIRECTORY_FILTERS, key) ? DIRECTORY_FILTERS[key] : null;
+    const allowed = normalized === DIRECTORY_LIST ? filter !== null || ['q', 'limit', 'offset'].includes(key)
       : history ? ['limit', 'cursor'].includes(key) : normalized === '/v1/knowledge/search' && key === 'q';
     if (!allowed) {
       throw new BackendRequestError('Unsupported query parameter', 400);
@@ -94,7 +97,9 @@ function validateBackendTarget(path, searchParams, mode, method) {
     if (history && key === 'cursor' && !isHistoryCursor(value)) {
       throw new BackendRequestError('Invalid history pagination parameter', 400);
     }
-    if (normalized === DIRECTORY_LIST || (history && key === 'limit')) {
+    if (filter) {
+      if (!filter.includes(value)) throw new BackendRequestError('Invalid directory filter', 400);
+    } else if (normalized === DIRECTORY_LIST || (history && key === 'limit')) {
       if (key === 'q') {
         if ([...value].length > DIRECTORY_MAX_QUERY || value.includes('\0')) {
           throw new BackendRequestError('Invalid directory query', 400);
@@ -167,9 +172,7 @@ export async function prepareProxyRequest(request, path, env, readSessionToken) 
   const method = request.method.toUpperCase();
   const mode = resolveUiAuthMode(env);
   const { pathname, searchParams, href } = new URL(request.url);
-  const target = validateBackendTarget(path, searchParams, mode, method);
-  // Catch-all params are decoded. Do not let path aliases reach account subresources.
-  if ((target.history || target.grants) && pathname !== `/api/bri${path}`) throw new BackendRequestError('Not found', 404);
+  const target = validateBackendTarget(path, searchParams, mode, method, pathname);
   // URLSearchParams does not expose empty query strings or separators alone.
   if (target.grants && href.split('#', 1)[0].includes('?')) throw new BackendRequestError('Unsupported query parameter', 400);
   let accessToken;

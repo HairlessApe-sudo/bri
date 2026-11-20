@@ -171,6 +171,12 @@ type QueuePage = { items: QueueRow[]; next_cursor: string | null };
 export type ApprovalQueueView = View & { page?: QueuePage; pageNumber: number };
 const pageLimit = 25;
 
+function queuePath(cursor: string | null) {
+  const query = new URLSearchParams({ limit: String(pageLimit) });
+  if (cursor != null) query.set('cursor', cursor);
+  return `${prefix}/queue?${query}`;
+}
+
 function timestamp(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value));
 }
@@ -196,6 +202,19 @@ function queuePage(value: unknown): QueuePage {
   return { items, next_cursor: value.next_cursor };
 }
 
+// The overview gets only an authorization result; never share the page with it.
+export async function checkApprovalQueueAccess(transport: ApprovalTransport, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false;
+  try {
+    const response = await transport(queuePath(null), { method: 'GET', cache: 'no-store', redirect: 'manual', signal });
+    if (signal.aborted || response.status !== 200 || response.redirected) return false;
+    queuePage(await response.json());
+    return !signal.aborted;
+  } catch {
+    return false;
+  }
+}
+
 export function createApprovalQueueFlow(transport: ApprovalTransport, stepUp: ApprovalStepUp) {
   const { getSnapshot, subscribe, begin, finish, cancelPending } = store<ApprovalQueueView>(
     { phase: 'idle', pageNumber: 1 }, transport, stepUp,
@@ -206,11 +225,8 @@ export function createApprovalQueueFlow(transport: ApprovalTransport, stepUp: Ap
     const signal = begin({ phase: 'loading', page: undefined, receipt: undefined, error: undefined });
     if (!signal) return;
     cursors = nextCursors;
-    const query = new URLSearchParams({ limit: String(pageLimit) });
-    const cursor = cursors.at(-1);
-    if (cursor != null) query.set('cursor', cursor);
     try {
-      const page = queuePage(await readJson(transport, signal, `${prefix}/queue?${query}`));
+      const page = queuePage(await readJson(transport, signal, queuePath(cursors.at(-1) ?? null)));
       if (page.next_cursor !== null && cursors.includes(page.next_cursor)) throw new Error('Invalid cursor');
       finish(signal, { phase: 'ready', page, pageNumber: cursors.length });
     } catch (error) {

@@ -123,6 +123,35 @@ test('directory permits only unique list parameters and accepts no detail query 
   await assert.rejects(proxy.prepareProxyRequest(request(`/${id}?q=example`), `${list}/${id}`, env, unused), status(400));
 });
 
+test('overview forwards only the documented exact list filters with bounded search pagination', async () => {
+  for (const [key, values] of Object.entries({ status: ['pending', 'active', 'suspended', 'deactivated'],
+    role: ['user', 'superuser'], mfa_status: ['verified', 'unknown'] })) {
+    for (const value of values) {
+      const query = `?q=Alice+%26+Bob&limit=25&offset=10000&${key}=${value}`;
+      const target = await proxy.prepareProxyRequest(request(query), list, env, async (directory) => {
+        assert.equal(directory, true);
+        return session;
+      });
+      assert.equal(target.url, `${env.BRI_API_ORIGIN}${list}${query}`);
+      for (const suffix of [`/${id}`, historySuffix, `/${id}/grants`]) {
+        await assert.rejects(proxy.prepareProxyRequest(request(`${suffix}?${key}=${value}`), `${list}${suffix}`, env, unused), status(400));
+      }
+    }
+    for (const query of [`${key}=`, `${key}=ADMIN`, `${key}=constructor`, `${key}=${values[0]}%0A`,
+      `${key}=${values[0]}&%${key.charCodeAt(0).toString(16)}${key.slice(1)}=${values[0]}`]) {
+      await assert.rejects(proxy.prepareProxyRequest(request(`?${query}`), list, env, unused), status(400));
+    }
+  }
+});
+
+test('overview rejects decoded list aliases before session lookup', async () => {
+  for (const path of ['/api/bri/v1/%75sers', '/api/bri/v1/users/', '/api/bri/%76%31/users']) {
+    for (const search of ['', '?status=pending', '?status=invalid']) {
+      await assert.rejects(proxy.prepareProxyRequest(new Request(`https://ui.example.test${path}${search}`), list, env, unused), status(404));
+    }
+  }
+});
+
 test('directory rejects client authority headers and requires a server session', async () => {
   for (const name of ['authorization', 'x-dev-identity', 'x-tenant-id', 'x-bri-tenant-context', 'x-role', 'x-bri-role']) {
     await assert.rejects(proxy.prepareProxyRequest(request('', { headers: { [name]: 'fixture-client-value' } }), list, env, unused), status(400));

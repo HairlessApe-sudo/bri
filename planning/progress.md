@@ -1,7 +1,13 @@
 # BRI Project Progress
 
-Last updated: 2026-11-19
+Last updated: 2026-11-20
 Stage: 3 — platform foundation MVP, synthetic development implementation
+
+## A11.9 — Account administration closeout (2026-11-20)
+
+- Migration `0027` closes release execution of the staged provisioning and lifecycle write routines. Migration `0028` checks live A11.8 visibility under A10's governance fence before the existing request and decision commands, without changing replay or provider execution. Staged lifecycle and delegation reset obsolete confirmation context.
+- Migration `0029` adds lifecycle, class and safe MFA filters before directory pagination and reuses the A11.7 authorization check for the grants shortcut. The overview shows pending setup from directory status and offers the existing MFA queue only in the authorized staged interface.
+- Consolidated local verification: 523 backend and 122 frontend tests passed without failures or skips; TypeScript and the optimized build passed. Disposable PostgreSQL verified 29 migration checksums, unchanged replay and forced RLS on 52 non-ledger tables. See the [A11 acceptance matrix](a11-acceptance.md) for the local and hosted boundaries.
 
 ## A11.8 — MFA reset request and review (2026-11-19)
 

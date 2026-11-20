@@ -9,6 +9,7 @@ const statusLabels = { pending: 'Pending', active: 'Active', suspended: 'Suspend
 const roleLabels = { user: 'User', superuser: 'Superuser' };
 const mfaLabels = { verified: 'Verified', unknown: 'Unknown' };
 const userName = (user: Pick<DirectoryUser, 'display_name'>) => user.display_name?.trim() || 'Unnamed user';
+export const directoryFilterLabels = { status: statusLabels, role: roleLabels, mfa_status: mfaLabels };
 
 function DirectoryError({ error, detail = false }: { error: Error; detail?: boolean }) {
   const { status } = error as Error & { status?: number };
@@ -22,18 +23,20 @@ function DirectoryError({ error, detail = false }: { error: Error; detail?: bool
   </div>;
 }
 
-export function DirectoryList({ data, error, loading, offset, onPage, onSelect }: Remote<DirectoryUserPage> & {
-  offset: number; onPage: (offset: number) => void; onSelect: (id: string) => void;
+export function DirectoryList({ data, error, loading, offset, onPage, onSelect, onViewGrants }: Remote<DirectoryUserPage> & {
+  offset: number; onPage: (offset: number) => void; onSelect: (id: string) => void; onViewGrants: (id: string) => void;
 }) {
   const atLimit = offset + DIRECTORY_PAGE_SIZE > DIRECTORY_MAX_OFFSET;
   return <>
     {error ? <DirectoryError error={error} /> : <StateMessage loading={loading}>
       {data && (data.items.length ? <div className="table-wrap">
         <table aria-label="Directory users">
-          <thead><tr><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Role</th><th scope="col">MFA</th></tr></thead>
+          <thead><tr><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Role</th><th scope="col">MFA</th><th scope="col">Grants</th></tr></thead>
           <tbody>{data.items.map((user) => <tr key={user.id}>
             <td><button className="directory-user breakable" type="button" onClick={() => onSelect(user.id)}>{userName(user)}</button></td>
-            <td>{statusLabels[user.status]}</td><td>{roleLabels[user.role]}</td><td>{mfaLabels[user.mfa_status]}</td>
+            <td>{statusLabels[user.status]}{user.status === 'pending' && <div>Account setup pending</div>}</td>
+            <td>{roleLabels[user.role]}</td><td>{mfaLabels[user.mfa_status]}</td>
+            <td>{user.can_view_grants === true && <button className="source-pill" type="button" aria-label={`View grants for ${userName(user)}`} onClick={() => onViewGrants(user.id)}>View grants</button>}</td>
           </tr>)}</tbody>
         </table>
       </div> : <p className="state-message" role="status">No users found.</p>)}

@@ -45,6 +45,12 @@ Owner-approved subdivision of A11: stage an MFA reset form for eligible active n
 
 Keep A10's two distinct eligible Admins, explicit action grants, verified 15-minute TOTP freshness, 24-hour expiry, idempotency, concurrency controls, immutable audit, and separate execution/reconciliation. Correct unsafe approval SQL access only by narrowly removing the staged-only routines from the runtime login; do not add a hosted execution architecture. Verify on disposable PostgreSQL 16 with two synthetic tenants, the restricted role, and independent review. No provisioning queue, live provider, hosted mutations, deployment, A11.9, or Data Disposition.
 
+## A11.9 — Account administration closeout
+
+Owner-approved final local subdivision of A11. Align provisioning and lifecycle write ACLs with the staged A10 approval boundary, serialize A11.8 visibility authorization with its A10 commands, and reset lifecycle and delegation confirmations when their staged context changes. Preserve existing policy, verified evidence, replay, transactional audit, and separate provider execution.
+
+Complete the directory overview with structured lifecycle, ordinary account class, and safe MFA filters. Provide an independently authorized grants entry point, the pending setup indicator, and an authorized link to the existing MFA reset queue without merging the workflows or exposing hidden data. Run consolidated local acceptance and independent security review. No hosted enablement, live provider, deployment, A12, or Data Disposition work.
+
 ## Boundaries for both assignments
 
 Additive checksummed migrations only. No production authentication, hosted administration/configuration writes, public signup, real customer provisioning/data, shared migration, provider setting changes, deployment or push. Use synthetic fixtures and disposable PostgreSQL. Record test results and any externally blocked gate explicitly. No emergency bypass, no modification of prior migration files.

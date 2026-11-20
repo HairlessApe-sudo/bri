@@ -1,4 +1,5 @@
 import type { DirectoryUser } from '@/lib/api';
+import { createUserAdminStore } from '@/lib/user-admin-context';
 import { isDirectoryUserId } from '@/lib/user-directory.mjs';
 
 export type LifecycleTransport = (path: string, options: RequestInit) => Promise<Response>;
@@ -41,27 +42,28 @@ function isAccount(result: unknown, id: string): result is LifecycleAccount {
 }
 
 // Staged only: there is no network fallback or release proxy for this contract.
-export function createLifecycleFlow(id: string, transport: LifecycleTransport, show: (view: LifecycleView) => void) {
+export function createLifecycleFlow(id: string, transport: LifecycleTransport, show?: (view: LifecycleView) => void) {
   if (!isDirectoryUserId(id)) throw new Error('Invalid user ID');
   const path = `/v1/users/${id}/lifecycle`;
-  let view = initialLifecycleView;
-  function update(next: Partial<LifecycleView>) {
-    view = { ...view, ...next };
-    show(view);
-  }
+  const { getSnapshot, subscribe, update, begin, bind } = createUserAdminStore(initialLifecycleView, show);
 
   async function request(init: RequestInit, expectedVersion?: number) {
     const saving = expectedVersion !== undefined;
     let status: number | undefined;
-    update({ phase: saving ? 'saving' : 'loading', action: null, error: undefined });
+    const signal = begin({ phase: saving ? 'saving' : 'loading', action: null, error: undefined });
+    // Publishing the busy view can synchronously retire this context.
+    if (signal === null || signal?.aborted) return;
     try {
-      const response = await transport(path, init);
+      const response = await transport(path, signal ? { ...init, signal } : init);
+      if (signal?.aborted) return;
       status = response.status;
       if (!response.ok) throw new Error('Lifecycle request unavailable');
       const result: unknown = await response.json();
+      if (signal?.aborted) return;
       if (!isAccount(result, id) || result.version === expectedVersion) throw new Error('Invalid lifecycle response');
       update({ account: result, phase: 'ready' });
     } catch {
+      if (signal?.aborted) return;
       let error = saving ? 'Could not confirm the change. Refresh lifecycle before another attempt.'
         : 'Could not load lifecycle details. Refresh lifecycle to try again.';
       if (saving && (status === 409 || status === 412)) error = 'The account changed. Refresh lifecycle before choosing an action again.';
@@ -69,21 +71,24 @@ export function createLifecycleFlow(id: string, transport: LifecycleTransport, s
       if (status === 401) error = 'A verified session is required to access lifecycle details.';
       if (status === 403) error = 'Access to this lifecycle request was denied.';
       if (status === 404) error = 'Lifecycle details are not available for this user.';
-      update({ phase: 'refresh-required', account: unavailable ? null : view.account, error });
+      update({ phase: 'refresh-required', account: unavailable ? null : getSnapshot().account, error });
     }
   }
 
   async function refresh() {
-    if (view.phase === 'loading' || view.phase === 'saving') return;
+    const { phase } = getSnapshot();
+    if (phase === 'loading' || phase === 'saving') return;
     await request({ method: 'GET' });
   }
 
   function select(action: LifecycleAction | null) {
+    const view = getSnapshot();
     if (view.phase !== 'ready' || !view.account || (action !== null && !permittedLifecycleActions(view.account).includes(action))) return;
     update({ action, error: undefined });
   }
 
   async function submit(action: LifecycleAction, value: string, confirmed: boolean) {
+    const view = getSnapshot();
     const { account } = view;
     if (view.phase !== 'ready' || !account || view.action !== action || !permittedLifecycleActions(account).includes(action)) return;
     let fields: { display_name: string } | { reason: string };
@@ -109,5 +114,5 @@ export function createLifecycleFlow(id: string, transport: LifecycleTransport, s
       body: JSON.stringify({ action, expected_version: account.version, ...fields }) }, account.version);
   }
 
-  return { refresh, select, submit };
+  return { getSnapshot, subscribe, bind, refresh, select, submit };
 }
