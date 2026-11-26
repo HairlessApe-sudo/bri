@@ -815,6 +815,8 @@ test('the release Next handler denies A12 intake and noncanonical reads before s
       '/v1/sources/csv/fixture-job', '/v1/sources/csv%2Ffixture-job',
       '/v1/sources/csv-intake/fixture-job', '/v1/staged/sources/csv',
       '/v1/knowledge/proposals', '/v1/knowledge/proposals/csv',
+      ...['', '/decision'].flatMap((suffix) => ['csv%3A', 'csv:', 'csv%3a', 'csv%253A']
+        .map((lead) => `/v1/knowledge/proposals/csv/${lead}${csvId}${suffix}`)),
       '/v1/knowledge/proposals/csv/fixture-proposal/decision', '/v1/knowledge/proposals/fixture-proposal/decision',
       ...['knowledge', 'sources'].flatMap((section) => [
         `csv:${csvId}`, `csv%3a${csvId}`, `csv%253A${csvId}`, `%63sv%3A${csvId}`,

@@ -96,7 +96,7 @@ class _Authority:
         return self.tenant, self.actor, self.sid, self.issuer
 
 
-def _private_request(request: Request, app: FastAPI, *, reader_only: bool = False) -> None:
+def _private_request(request: Request, app: FastAPI, *, guarded_routes: bool = False) -> None:
     hosts = request.headers.getlist('host')
     server = request.scope.get('server')
     try:
@@ -116,13 +116,13 @@ def _private_request(request: Request, app: FastAPI, *, reader_only: bool = Fals
         for h in request.headers
     ):
         raise HTTPException(403, 'Private loopback listener required')
-    # The stricter reader allowlist validates a bounded raw query separately.
-    query = () if reader_only else request.query_params.multi_items()
+    # A dedicated route guard validates the bounded raw query separately.
+    query = () if guarded_routes else request.query_params.multi_items()
     if (query and not (request.method == 'GET' and request.url.path == '/v1/knowledge/search'
                        and len(query) == 1 and query[0][0] == 'q')) or any(
         h in {'tenant', 'tenant-id', 'actor', 'actor-id', 'principal', 'principal-id', 'role',
               'session-id', 'auth-user-id', 'issuer', 'cookie'}
-        or (h.startswith('x-') and (reader_only or h != 'x-node-id'))
+        or (h.startswith('x-') and (guarded_routes or h != 'x-node-id'))
         for h in request.headers
     ):
         raise HTTPException(400, 'Authority is server-controlled')
@@ -324,7 +324,8 @@ def _stage_socket(private_socket: Path, auth_transport: httpx.MockTransport, *sc
 _Authorize = Callable[[Request, str, str | None], Awaitable[_Authority]]
 
 
-def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, reader_only: bool = False):
+def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, reader_only: bool = False,
+                private_guard: Callable[[Request], None] | None = None):
     class IdentityDatabase(Database):
         @contextmanager
         def _connect(self):
@@ -335,16 +336,17 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
 
     registry = IdentityDatabase('', '')
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
-    surface = 'CSV reader' if reader_only else 'CSV intake'
+    guard = _reader_request if reader_only else private_guard
+    surface = 'CSV reader' if reader_only else 'CSV review' if private_guard is not None else 'CSV intake'
 
     @app.middleware('http')
     async def private(request: Request, call_next):
         cid = uuid4()
         request.state.csv_correlation = cid
         try:
-            _private_request(request, app, reader_only=reader_only)
-            if reader_only:
-                _reader_request(request)
+            _private_request(request, app, guarded_routes=guard is not None)
+            if guard is not None:
+                guard(request)
             response = await call_next(request)
         except HTTPException as exc:
             response = JSONResponse({'detail': exc.detail}, status_code=exc.status_code)

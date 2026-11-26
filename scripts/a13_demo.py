@@ -85,11 +85,11 @@ def until(check, label, *, process=None, seconds=60):
 
 
 @contextmanager
-def reader_server(app):
+def reader_server(app, *, port=8013):
     import uvicorn
 
     with socket.socket() as listener:
-        listener.bind(('127.0.0.1', 8013))
+        listener.bind(('127.0.0.1', port))
         config = uvicorn.Config(app, proxy_headers=False, access_log=False, log_level='error',
                                 timeout_graceful_shutdown=5)
         server = uvicorn.Server(config)
@@ -126,6 +126,17 @@ def chrome_port(profile):
         if len(parts) >= 2 and parts[0].isdigit():
             return int(parts[0])
     return None
+
+
+def start_chromium(args, scratch, stack):
+    profile = scratch / 'browser'
+    log = stack.enter_context((scratch / 'chromium.log').open('wb'))
+    chrome = launch(stack, [args.chromium, '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+                            '--no-first-run', '--disable-background-networking', '--disable-breakpad',
+                            '--no-proxy-server', '--remote-debugging-address=127.0.0.1',
+                            '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
+                    stdout=log, stderr=log)
+    return until(lambda: chrome_port(profile), 'Chromium DevTools startup', process=chrome, seconds=20)
 
 
 def next_copy(scratch):
@@ -198,16 +209,7 @@ def run(args, scratch, stack):
     from test_csv_intake_api import StagedCsvPostgres
     from test_authentication import ISSUER
 
-    port = None
-    if not args.http_only:
-        profile = scratch / 'browser'
-        log = stack.enter_context((scratch / 'chromium.log').open('wb'))
-        chrome = launch(stack, [args.chromium, '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
-                                '--no-first-run', '--disable-background-networking', '--disable-breakpad',
-                                '--no-proxy-server', '--remote-debugging-address=127.0.0.1',
-                                '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
-                        stdout=log, stderr=log)
-        port = until(lambda: chrome_port(profile), 'Chromium DevTools startup', process=chrome, seconds=20)
+    port = None if args.http_only else start_chromium(args, scratch, stack)
 
     fixture = StagedCsvPostgres()
     stack.callback(fixture.doClassCleanups)
@@ -374,13 +376,16 @@ def run(args, scratch, stack):
     require(protocol(worker, step='stats')['jwksReads'] > 0, 'No JWKS reads observed')
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(run_demo=run, *, entry=__file__, name='a13', browser_required=False, description=__doc__):
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument('--pg-bin', required=True, type=Path, help='offline PostgreSQL 16.2 binary directory')
     parser.add_argument('--swc-archive', type=Path, help='cached matching Linux x64 GNU SWC tarball (WSL override)')
     parser.add_argument('--chromium', default=str(Path.home() / '.hermes/tools/chromium-1248/chrome-linux64/chrome'))
     parser.add_argument('--node', default=shutil.which('node') or 'node', help='Linux Node 26 executable')
-    parser.add_argument('--http-only', action='store_true', help='diagnose real HTTP/DB flow without browser (not a Chromium pass)')
+    if not browser_required:
+        parser.add_argument('--http-only', action='store_true', help='diagnose real HTTP/DB flow without browser (not a Chromium pass)')
+    else:
+        parser.set_defaults(http_only=False)
     args = parser.parse_args()
     require(not sys.flags.optimize, 'Do not disable Python fixture assertions')
     # The outer invocation resolves authorized local paths before entering the
@@ -391,7 +396,7 @@ def main():
         tmp = Path(os.environ.get('TMPDIR') or '/tmp').resolve(strict=True)
         env = {key: os.environ[key] for key in ('PATH', 'LD_LIBRARY_PATH') if key in os.environ}
         env.update(TMPDIR=str(tmp), BRI_TEST_PG_BIN=str(args.pg_bin.resolve(strict=True)), LC_ALL='C.UTF-8')
-        argv = [sys.executable, '-B', __file__, '--pg-bin', env['BRI_TEST_PG_BIN'],
+        argv = [sys.executable, '-B', entry, '--pg-bin', env['BRI_TEST_PG_BIN'],
                 '--node', str(Path(args.node).resolve(strict=True)), '--chromium', str(Path(args.chromium).resolve())]
         if args.swc_archive:
             argv += ['--swc-archive', str(args.swc_archive.resolve(strict=True))]
@@ -399,17 +404,17 @@ def main():
             argv += ['--http-only']
         os.execvpe('unshare', ['unshare', '--map-current-user', '--keep-caps', '-npf', '--kill-child',
                                'sh', '-ec', 'ip link set lo up; exec setpriv --bounding-set=-all '
-                               '--inh-caps=-all --ambient-caps=-all -- "$@"', 'a13-demo', *argv], env)
+                               '--inh-caps=-all --ambient-caps=-all -- "$@"', f'{name}-demo', *argv], env)
     require(socket.if_nameindex() == [(1, 'lo')], 'The demo requires a loopback-only network namespace')
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
     os.umask(0o077)
-    with TemporaryDirectory(prefix='a13-') as temp:
+    with TemporaryDirectory(prefix=f'{name}-') as temp:
         scratch = Path(temp)
         os.environ.update(HOME=temp, XDG_CONFIG_HOME=temp, XDG_CACHE_HOME=temp)
         try:
             with ExitStack() as stack:
-                run(args, scratch, stack)
+                run_demo(args, scratch, stack)
         except Exception as exc:
             def safe(text):
                 return re.sub(r'[\w.%-]{70,}', '[redacted]', str(text))

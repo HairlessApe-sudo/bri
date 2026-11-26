@@ -21,14 +21,14 @@ async function listen(t, origin, handler) {
   t.after(() => { server.closeAllConnections(); return new Promise((resolve) => server.close(resolve)); });
 }
 
-function get(path, headers = {}, method = 'GET', localAddress = '127.0.0.1') {
+function get(path, headers = {}, method = 'GET', localAddress = '127.0.0.1', payload) {
   return new Promise((resolve, reject) => {
     const req = request(ui, { path, headers, method, localAddress }, (res) => {
       let body = '';
       res.setEncoding('utf8').on('data', (chunk) => { body += chunk; });
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
     });
-    req.on('error', reject).end();
+    req.on('error', reject).end(payload);
   });
 }
 
@@ -117,7 +117,7 @@ test('private HTTP bridge uses a verified SSR cookie and preserves backend decis
     [`${prefix}/%6bnowledge`, {}, 'GET', 404],
     ['/api/bri%2Dlocal/v1/knowledge', {}, 'GET', 404],
     [`${prefix}/sources/csv`, {}, 'GET', 404],
-    [`${prefix}/knowledge/proposals/csv`, {}, 'GET', 404],
+
     [`${prefix}/knowledge/${id}`, {}, 'GET', 404],
     [`${prefix}/knowledge/${encodeURIComponent(id).replace('%3A', '%3a')}`, {}, 'GET', 404],
     [`${prefix}/knowledge?tenant=other`, {}, 'GET', 400],
@@ -158,6 +158,87 @@ test('private HTTP bridge uses a verified SSR cookie and preserves backend decis
   }
   decision = 200;
   assert.equal((await get(`${prefix}/knowledge`, { cookie }, 'GET', '127.0.0.2')).status, 200);
+
+  await t.test('review uses only the pinned listener, exact routes and canonical signed decisions', async () => {
+    const base = '/v1/knowledge/proposals/csv';
+    const queue = `/api/bri-local${base}`;
+    const detail = `${queue}/${encodeURIComponent(id)}`;
+    const action = `${detail}/decision`;
+    const summary = { id, node_id: 'team', state: 'proposed', created_at: '2026-11-01T00:00:00+00:00' };
+    const seen = [];
+    let status = 200;
+    let body;
+    await listen(t, 'http://127.0.0.1:8114', async (req, res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      seen.push({ path: req.url, method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString() });
+      res.writeHead(status, { 'content-type': 'application/json', location: '/redirect', 'set-cookie': 'not-forwarded=1' });
+      res.end(JSON.stringify(body));
+    });
+    const before = reads.length;
+    body = { items: [summary], next_cursor: null };
+    const cursor = '5607a17a-61be-4c19-a912-bbfe61d070e3';
+    const queued = await get(`${queue}?limit=1&status=proposed&after=${cursor}`, { cookie });
+    assert.equal(queued.status, 200);
+    assert.deepEqual(JSON.parse(queued.body), body);
+    assert.equal(seen.at(-1).path, `${base}?status=proposed&after=${cursor}&limit=1`);
+    assert.equal(queued.headers['cache-control'], 'no-store');
+    assert.equal(queued.headers['set-cookie'], undefined);
+    body = { ...summary, state: 'failed', provenance: null, evidence: null, next_evidence_offset: null, history: [] };
+    assert.equal((await get(`${detail}?offset=0`, { cookie })).status, 200);
+    assert.equal(seen.at(-1).path, `${base}/${id}?offset=0`);
+    const post = (payload, headers = {}) => get(action, {
+      cookie, origin: ui, 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), ...headers,
+    }, 'POST', '127.0.0.1', payload);
+    body = { id, decision: 'approved' };
+    assert.deepEqual(JSON.parse((await post(' { "decision" : "approv\\u0065d" } ', { 'x-random': 'not-forwarded' })).body), body);
+    const sent = seen.at(-1);
+    assert.equal(sent.path, `${base}/${id}/decision`);
+    assert.equal(sent.method, 'POST');
+    assert.equal(sent.body, '{"decision":"approved"}');
+    assert.deepEqual(sent.headers, { authorization: ['Bearer', token].join(' '), accept: 'application/json',
+      'content-type': 'application/json', 'content-length': String(Buffer.byteLength(sent.body)), host: '127.0.0.1:8114', connection: sent.headers.connection });
+    const calls = seen.length;
+    for (const [path, code] of [[`${queue}?limit=51`, 400], [`${queue}?status=ready`, 400],
+      [`${queue}?after=csv%3A${cursor}`, 400], [`${queue}?limit=1&limit=2`, 400], [`${queue}?`, 400],
+      [`${detail}?offset=-1`, 400], [`${detail}?offset=999999999`, 400], [`${detail}?offset=01`, 400],
+      [detail.replace('%3A', '%253A'), 404], [detail.replace('%3A', '%3a'), 404], [`${detail}/`, 404], [action, 405]]) {
+      assert.equal((await get(path, { cookie })).status, code, path);
+    }
+    const valid = '{"decision":"approved"}';
+    assert.equal((await get(action, { cookie, 'content-type': 'application/json', 'content-length': valid.length }, 'POST', '127.0.0.1', valid)).status, 403);
+    assert.equal((await post(valid, { origin: 'http://127.0.0.1:3013' })).status, 403);
+    assert.equal((await post(valid, { 'content-type': 'application/json; charset=utf-8' })).status, 415);
+    assert.equal((await post(valid, { cookie: forgedCookie })).status, 401);
+    assert.equal((await get(queue)).status, 401);
+    for (const invalid of ['{"decision":"approve"}', '{"decision":"approved","decision":"rejected"}',
+      '{"decision":"approved","reason":null}', 'null', '["approved"]']) assert.equal((await post(invalid)).status, 400);
+    assert.equal((await post(' '.repeat(512) + valid)).status, 413);
+    const stalled = await new Promise((resolve, reject) => {
+      const req = request(ui, { path: action, method: 'POST', signal: AbortSignal.timeout(5000), headers: {
+        cookie, origin: ui, 'content-type': 'application/json', 'content-length': valid.length,
+      } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+      req.on('error', reject).write('{'); // Deliberately leave a small, validly framed body incomplete.
+    });
+    assert.equal(stalled, 408);
+    assert.equal(seen.length, calls);
+    assert.equal(reads.length, before);
+    status = 409;
+    body = { detail: 'private diagnostic' };
+    const stale = await post(valid);
+    assert.equal(stale.status, 409);
+    assert.doesNotMatch(stale.body, /private diagnostic/);
+    status = 302;
+    assert.equal((await post(valid)).status, 502);
+    assert.equal(seen.at(-1).path, `${base}/${id}/decision`);
+    status = 200;
+    body = { id, decision: 'rejected' };
+    assert.equal((await post(valid)).status, 502);
+    body = [{ id, text: 'legacy private evidence' }];
+    const unknown = await get(queue, { cookie });
+    assert.equal(unknown.status, 502);
+    assert.doesNotMatch(unknown.body, /private evidence/);
+  });
 
   await t.test('only knowledge detail accommodates an escaped 20 MB extraction', async () => {
     const project = (cell) => JSON.stringify({ headers: ['Test'], rows: [[cell]] });

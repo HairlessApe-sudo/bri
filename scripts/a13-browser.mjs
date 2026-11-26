@@ -67,7 +67,7 @@ async function until(check, label, ms = 45_000) {
   throw new Error(`Timed out: ${label}`);
 }
 
-async function browser(port, cookies) {
+async function browser(port, cookies, { countPosts = false } = {}) {
   assert(Number.isInteger(port) && port > 0 && port < 65536, 'Invalid DevTools port');
   const debuggerOrigin = `http://127.0.0.1:${port}`;
   const [tab] = (await (await fetch(`${debuggerOrigin}/json/list`, { signal: AbortSignal.timeout(5000) })).json())
@@ -83,6 +83,8 @@ async function browser(port, cookies) {
   let seq = 0;
   const pending = new Map();
   const responses = [];
+  const posts = new Map();
+  const reads = new Map();
   const requestCookies = new Map();
   const browserErrors = {};
   const countError = (key) => { browserErrors[key] = (browserErrors[key] ?? 0) + 1; };
@@ -102,6 +104,14 @@ async function browser(port, cookies) {
   ws.addEventListener('message', ({ data }) => {
     const msg = JSON.parse(data);
     if (msg.id) pending.get(msg.id)?.(msg);
+    if (countPosts && msg.method === 'Network.requestWillBeSent') {
+      const { url, method } = msg.params.request;
+      if (method === 'POST') posts.set(url, (posts.get(url) ?? 0) + 1);
+      if (method === 'GET') {
+        const path = url.split('?')[0];
+        reads.set(path, (reads.get(path) ?? 0) + 1);
+      }
+    }
     if (msg.method === 'Network.responseReceived') {
       const { response, type } = msg.params;
       responses.push({ id: msg.params.requestId, url: response.url, status: response.status, type,
@@ -189,7 +199,15 @@ async function browser(port, cookies) {
     ws.close();
     throw error;
   }
-  return { close: () => ws.close(), call, evaluate, response, navigate, dom, mark: () => responses.length };
+  return { close: () => ws.close(), call, evaluate, response, navigate, dom, mark: () => responses.length,
+    postCount: (url) => posts.get(url) ?? 0,
+    readCount: (url) => reads.get(url) ?? 0,
+    async hasHttpOnlyFixtureCookie(url) {
+      const { cookies: stored } = await call('Network.getCookies', { urls: [url] });
+      return cookies.length > 0 && cookies.every(({ name }) => stored.some((candidate) =>
+        candidate.name === name && candidate.httpOnly && candidate.domain === new URL(ui).hostname
+        && candidate.path === auth.cookiePath));
+    } };
 }
 
 async function openKnowledge(page) {
@@ -259,6 +277,14 @@ try {
       reply({ tokens: issued.map(({ token }) => token), ...(msg.httpOnly ? {
         cookie: readerCookies.map(({ name, value }) => `${name}=${value}`).join('; '),
       } : {}) });
+    } else if (msg.step.startsWith('a14-')) {
+      if (msg.port) {
+        queryPage?.close();
+        queryPage = await browser(msg.port, readerCookies, { countPosts: true });
+      }
+      const { reviewStep } = await import('./a14-browser.mjs');
+      await reviewStep(queryPage, msg);
+      reply({ ok: true });
     } else if (msg.step === 'alternatives') {
       queryPage = await browser(msg.port, readerCookies);
       // Direct top-level navigations make Lax cookies eligible; use the bridge

@@ -1,7 +1,15 @@
 # BRI Project Progress
 
-Last updated: 2026-11-20
+Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
+
+## A14 — Knowledge review workspace (2026-11-20)
+
+- Local synthetic-only operator workspace for the A12 review queue and decision workflow. See [knowledge review workspace](../architecture/knowledge-review-workspace.md). Approval remains separate from publication, and no hosted write is authorized.
+- Accepted on 2026-11-26 for the approved local synthetic-data-only scope. Verified implementation tree: `810ce4b2ca70c3fac27c0858bd095fba0fd79782`; closeout changes only this progress file.
+- Recovered final disposable PostgreSQL 16.2 run (exit 0): 604 backend tests passed, zero failures/errors/skips, including 10 A14 API and 13 A14 PostgreSQL tests covering two-tenant negative authorization. All 31 ledger checksums matched, replay was a no-op, and all 57 non-ledger tables had forced RLS under the restricted role's catalog check.
+- Recovered web verification (exit 0; identical `web/` subtree): 144 tests passed with no failures or skips, both TypeScript checks passed, and the optimized release build passed. The final [signed Chromium demo](../scripts/a14-demo.md) exited 0, covering approval, stale-decision refresh, and no implicit published-read grants. It does not cover browser reject-button execution, pagination, or BFCache restoration.
+- Independent review cleared the corrected SQL visibility-before-lock check and the staged authorization boundaries; final demo-only review of the verified tree passed with no blockers (`deleg_c3ad6f2a` and `deleg_af54ee0d`). Hosted execution, deployed ACL verification, production storage, malware scanning, real-data retention, and Generic Data Disposition remain excluded.
 
 ## A13 — Evidence-grounded questions in the local workspace (2026-11-20)
 

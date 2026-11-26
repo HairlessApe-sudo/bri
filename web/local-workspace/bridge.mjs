@@ -1,6 +1,8 @@
 import { request as httpRequest } from 'node:http';
 import { isIPv4 } from 'node:net';
 import { createServerClient, parseCookieHeader } from '@supabase/ssr';
+import { reviewPagePath } from './review-contract.mjs';
+import { reviewTarget, forwardReview } from './review-bridge.mjs';
 
 export const LOCAL_HOST = '127.0.0.2';
 export const LOCAL_PORT = 3013;
@@ -53,10 +55,10 @@ function browserAuthority(req) {
 }
 
 // A direct numeric-loopback socket: no environment proxy/dispatcher, DNS, redirects or shared cache.
-function loopbackGet(origin, path, headers, maxResponse = MAX_RESPONSE) {
+function loopbackRequest(origin, path, headers, maxResponse = MAX_RESPONSE, body) {
   return new Promise((resolve, reject) => {
     const outgoing = httpRequest(`${origin}${path}`, {
-      method: 'GET', headers, agent: false, signal: AbortSignal.timeout(8000),
+      method: body === undefined ? 'GET' : 'POST', headers, agent: false, signal: AbortSignal.timeout(8000),
     }, (upstream) => {
       const chunks = [];
       let size = 0;
@@ -74,7 +76,7 @@ function loopbackGet(origin, path, headers, maxResponse = MAX_RESPONSE) {
         status: upstream.statusCode, contentType: upstream.headers['content-type'], body: Buffer.concat(chunks),
       }));
     });
-    outgoing.on('error', reject).end();
+    outgoing.on('error', reject).end(body);
   });
 }
 
@@ -111,7 +113,7 @@ async function verifiedBearer(req) {
         if (String(input) !== `${LOCAL_AUTH_OPTIONS.origin}${jwksPath}` || init?.method !== 'GET') {
           return Response.json({ msg: 'Verification requires a current signed fixture' }, { status: 401 });
         }
-        const upstream = await loopbackGet(LOCAL_AUTH_OPTIONS.origin, jwksPath, { accept: 'application/json' });
+        const upstream = await loopbackRequest(LOCAL_AUTH_OPTIONS.origin, jwksPath, { accept: 'application/json' });
         if (upstream.status !== 200) return Response.json({ msg: 'Fixture signer unavailable' }, { status: 503 });
         return new Response(upstream.body, { headers: { 'content-type': 'application/json' } });
       },
@@ -138,11 +140,21 @@ export function composeLocalWorkspace(nextHandler) {
     const query = separator === -1 ? undefined : target.slice(separator + 1);
     if (path !== PREFIX && !path.startsWith(`${PREFIX}/`)) {
       // Only the separate Next UI and its assets are dispatched to Next. No release routes, even by alias.
+      if (path === '/review' || reviewPagePath.test(path)) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
+        res.setHeader('cache-control', 'no-store');
+        return nextHandler(req, res);
+      }
       if (path === '/' || path === '/knowledge' || record.test(path) || path.startsWith('/_next/static/')) {
         return nextHandler(req, res);
       }
       return deny(res, 404);
     }
+    const review = reviewTarget(path.slice(PREFIX.length), req.method, query);
+    if (typeof review === 'number') return deny(res, review);
+    if (review) return forwardReview(req, res, review, {
+      browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest, send, deny,
+    });
     if (req.method !== 'GET') return deny(res, 405);
     const upstreamPath = backendPath(path, query);
     if (upstreamPath === null) return deny(res, 404);
@@ -154,7 +166,7 @@ export function composeLocalWorkspace(nextHandler) {
       if (!token) return deny(res, 401, 'A current signed fixture session is required.');
       // backendPath has already validated the exact route and record UUID.
       const limit = upstreamPath.startsWith('/v1/knowledge/csv:') ? MAX_KNOWLEDGE_DETAIL_RESPONSE : MAX_RESPONSE;
-      const upstream = await loopbackGet(BACKEND, upstreamPath, { authorization: `Bearer ${token}`, accept: 'application/json' }, limit);
+      const upstream = await loopbackRequest(BACKEND, upstreamPath, { authorization: `Bearer ${token}`, accept: 'application/json' }, limit);
       if (upstream.status !== 200) return deny(res, upstream.status >= 400 && upstream.status <= 599 ? upstream.status : 502);
       if (!/^application\/json(?:\s*;|$)/i.test(upstream.contentType ?? '')) return deny(res, 502);
       return send(res, 200, upstream.body);
