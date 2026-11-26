@@ -3,6 +3,12 @@
 Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A16.1 — Strict XLSX extraction
+
+- Accepted for local synthetic-only extraction. [Strict XLSX contract](../architecture/strict-xlsx-extraction.md) defines the allowed workbook profile, canonical bytes, separate digests, worksheet evidence, and Linux resource isolation. Legacy XLSX hashing and existing CSV/PDF contracts are unchanged.
+- Verified implementation tree `8f717dd67ea8142906858754c31b10887cda1124`: 59 XLSX tests passed; the full disposable PostgreSQL 16.2 backend verifier passed all 676 tests with zero failures, errors or skips. Independent review `deleg_fbfc2e08` passed the exact implementation tree following the earlier fixes. Closeout changes only documentation.
+- A16.2 requires separate approval for governed submission, quarantine and worker integration, tenant-qualified lineage and evidence binding, database privileges and subsequent review/publication boundaries. No A15 metric change, real data, hosted use or deployment is authorized.
+
 ## A15 — Published knowledge inventory
 
 - A15 accepted for the approved local synthetic-data-only scope, subject to documented residual availability-side-channel risk acceptance. The finding remains unresolved and is a mandatory production security gate.
