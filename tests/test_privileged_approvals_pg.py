@@ -79,9 +79,9 @@ def assert_release_account_acls(db):
                                f"permission denied for function {name.split('.')[1]}")
 
 
-def seed_approval_tenant(connect):
+def seed_approval_tenant(connect, *, tenant=None):
     """Create one operational client with independent admins, grants and sessions."""
-    tenant = "fixture-" + uuid4().hex
+    tenant = tenant or "fixture-" + uuid4().hex
     actors = []
     with connect("postgres") as db:
         db.execute(

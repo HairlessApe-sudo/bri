@@ -36,7 +36,8 @@ NATIVE = {'test_security_lifecycle_postgres', 'test_provider_security_events_pos
           'test_account_history_postgres', 'test_account_history_api',
           'test_account_current_grants_postgres', 'test_account_current_grants_api',
           'test_mfa_reset_administration_postgres', 'test_csv_intake_postgres', 'test_csv_intake_api',
-          'test_csv_review_workspace_postgres', 'test_csv_review_workspace_api', 'test_csv_reporting_postgres'}
+          'test_csv_review_workspace_postgres', 'test_csv_review_workspace_api', 'test_csv_reporting_postgres',
+          'test_xlsx_intake_postgres', 'test_xlsx_intake_api'}
 GOV = 'test_client_governance_pg'
 
 
@@ -191,9 +192,10 @@ def migrations(files, config, opener):
         require(not c.execute("SELECT 1 FROM pg_constraint WHERE connamespace='bri'::regnamespace AND NOT convalidated").fetchone(),'unvalidated constraint')
     with opener('bri_app') as c:
         catalog = c.execute("SELECT relname,relrowsecurity,relforcerowsecurity,pg_get_userbyid(relowner) FROM pg_class WHERE relnamespace='bri'::regnamespace AND relkind='r' AND relname<>'schema_migrations'").fetchall()
-        from scripts.db.disposable.catalog import declared_tables
+        from scripts.db.disposable.catalog import declared_tables, verify_xlsx_catalog
         require({row[0] for row in catalog} == declared_tables(files), 'catalog differs from migration table declarations')
         require(catalog and all(row[1:]==(True,True,'bri_migrator') for row in catalog),'unexpected RLS, FORCE or owner')
+        verify_xlsx_catalog(c)
         print(f'PASS catalog as bri_app: {len(catalog)} non-ledger tables, all FORCE RLS and migrator-owned')
     print(f'PASS {len(rows)} ledger entries, all checksums, unchanged replay, backfill and constraint checks')
 

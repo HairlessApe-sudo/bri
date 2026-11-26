@@ -3,6 +3,12 @@
 Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A16.2 — Governed XLSX submission and processing
+
+- Accepted for local synthetic data through immutable pending proposal creation only. See [architecture](../architecture/governed-xlsx-intake.md) and [signed demo](../scripts/a16_2-demo.md). No review, validation, publication or retrieval.
+- Verified tree `0b9037bead0237eb73d67aa2c6144ae126e71c04`: disposable PostgreSQL 16.2 verifier exited 0 with 707 passing tests and no skips, including signed loopback and A13/A15 invariance. Independent security review `deleg_b189d924` passed the exact tree for local synthetic use. No frontend implementation changed.
+- MVP carry-forward: governed selectable-text PDF intake; machine-identity scope closure; retention and deletion propagation; deployment-profile verification; operational recovery and restore drills; consolidated MVP verification. These are outstanding, not authorized by A16.2. A15's unresolved availability channel remains a production gate.
+
 ## A16.1 — Strict XLSX extraction
 
 - Accepted for local synthetic-only extraction. [Strict XLSX contract](../architecture/strict-xlsx-extraction.md) defines the allowed workbook profile, canonical bytes, separate digests, worksheet evidence, and Linux resource isolation. Legacy XLSX hashing and existing CSV/PDF contracts are unchanged.
