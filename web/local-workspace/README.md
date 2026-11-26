@@ -1,4 +1,4 @@
-# A13/A14 local fixture workspace
+# A13/A14/A15 local fixture workspace
 
 From `web/`, with the existing dependencies installed, run `node local-workspace/server.mjs` in the same network namespace as the fixture servers. Open `http://127.0.0.2:3013/knowledge` for published evidence or `http://127.0.0.2:3013/review` for review. This is a separate Next app; ordinary `npm run dev`, `npm run build` and `npm start` do not mount it. The numeric listener addresses are fixed.
 
@@ -23,6 +23,8 @@ The review bridge uses the same signed fixture session, but routes only these op
 
 Failed processing is terminal and has no extraction or decision controls. Approval records a review outcome; it does not publish a record or authorize access. Review responses are checked against the bounded queue/detail/acknowledgement contract before being shown.
 
-The local UI displays no previous result while revalidating. On `pagehide`, it removes evidence and aborts pending reads synchronously. While parked, focus and visibility changes cannot restart reads. A persisted `pageshow` starts fresh reads under a new refresh key. User refresh and tab focus/visibility also revalidate while the page is active. This is request-time revocation, not a push guarantee for previously delivered data in a continuously open tab.
+The local evidence UI displays no previous result while revalidating. On `pagehide`, it removes evidence and aborts pending reads synchronously. While parked, focus and visibility changes cannot restart reads. A persisted `pageshow` starts fresh reads under a new refresh key. User refresh and tab focus/visibility also revalidate while the page is active. This is request-time revocation, not a push guarantee for previously delivered data in a continuously open tab.
+
+Open `/reports` for the published knowledge inventory. Enter an exact node ID you are authorized to evaluate; the workspace does not look up or suggest nodes. The explicit evaluation sends `GET /api/bri-local/v1/reports/published-knowledge-inventory?scope_node_id=…` through the same signed reader on `:8013` with a **512 KiB** response cap. Editing the scope, evaluating again, or leaving the page clears the previous result. Evidence links open the existing independently authorized knowledge and source pages. See `scripts/a15-demo.md` for the disposable signed API/Chromium parity check.
 
 Checks from `web/`: `node --test tests/*.test.mjs`, `npm run typecheck`, `node node_modules/typescript/bin/tsc --noEmit -p local-workspace/tsconfig.json`, and `npm run build` for the ordinary release app.

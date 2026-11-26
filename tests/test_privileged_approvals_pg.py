@@ -159,7 +159,8 @@ def seed_approval_tenant(connect):
 )
 class ApprovalDatabase(unittest.TestCase):
     @classmethod
-    def setUpClass(cls, *, staged_account_write=None, before_csv_migration=None):
+    def setUpClass(cls, *, staged_account_write=None, before_csv_migration=None,
+                   temp_file_limit_kb: int | None = None):
         if any(k.startswith("PG") for k in os.environ):
             raise RuntimeError(
                 "run disposable tests without inherited libpq environment"
@@ -192,6 +193,9 @@ class ApprovalDatabase(unittest.TestCase):
             "--username=postgres",
             "--auth=trust",
         )
+        startup = f"-k {cls.sock} -c listen_addresses=''"
+        if temp_file_limit_kb is not None:
+            startup += f" -c temp_file_limit={int(temp_file_limit_kb)}"
         cli(
             "pg_ctl",
             "-D",
@@ -199,7 +203,7 @@ class ApprovalDatabase(unittest.TestCase):
             "-l",
             str(cls.sock / "log"),
             "-o",
-            f"-k {cls.sock} -c listen_addresses=''",
+            startup,
             "-w",
             "start",
         )

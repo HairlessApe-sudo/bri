@@ -23,6 +23,12 @@ Status: Initial qualitative register; owners, likelihood/impact scoring and risk
 | R-17 | Technical documents interpreted as authorization or legal/compliance assurance | High | Prominent status labels, separate approval gates, legal review, no compliance claims | Project lead unassigned |
 | R-18 | Data export/report consumer exposes derived intelligence beyond source permissions | High | Treat export as a new access decision; scoped API identities, destination review, audit and revocation | Product/security owner unassigned |
 
+## A15-AM2 production gate — residual reporting availability channel
+
+Unresolved; conditional local synthetic-only risk acceptance requires renewed independent sign-off. Hidden candidate rows are excluded from counts, evidence and logical overflow, but can increase scan work, potentially turning a complete response into an observable, fail-closed unavailable response. Verification did not demonstrate a hidden-row-induced timeout; review identified no direct unauthorized count or evidence disclosure. No quantitative likelihood or severity is assigned.
+
+Real customer data and hosted production execution are blocked pending the separate production security assessment and approved risk treatment specified in [the reporting architecture](../architecture/published-knowledge-inventory.md#residual-availability-risk-a15-am2).
+
 ## Immediate blockers
 
 R-01, R-03, R-04, R-07 and R-16 must have reviewed controls and accountable owners before any real data, external model or production pilot. No implementation begins until separately authorized. Reassess likelihood/severity after threat modeling and customer discovery.

@@ -3,6 +3,7 @@ import { isIPv4 } from 'node:net';
 import { createServerClient, parseCookieHeader } from '@supabase/ssr';
 import { reviewPagePath } from './review-contract.mjs';
 import { reviewTarget, forwardReview } from './review-bridge.mjs';
+import { parseReport, reportMaxBytes, reportPath, reportScope, reportTarget } from './reporting.mjs';
 
 export const LOCAL_HOST = '127.0.0.2';
 export const LOCAL_PORT = 3013;
@@ -140,6 +141,11 @@ export function composeLocalWorkspace(nextHandler) {
     const query = separator === -1 ? undefined : target.slice(separator + 1);
     if (path !== PREFIX && !path.startsWith(`${PREFIX}/`)) {
       // Only the separate Next UI and its assets are dispatched to Next. No release routes, even by alias.
+      if (path === '/reports') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
+        res.setHeader('cache-control', 'no-store');
+        return nextHandler(req, res);
+      }
       if (path === '/review' || reviewPagePath.test(path)) {
         if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
         res.setHeader('cache-control', 'no-store');
@@ -156,17 +162,28 @@ export function composeLocalWorkspace(nextHandler) {
       browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest, send, deny,
     });
     if (req.method !== 'GET') return deny(res, 405);
-    const upstreamPath = backendPath(path, query);
+    const reporting = path === `${PREFIX}${reportPath}`;
+    const scope = reporting ? reportScope(query) : null;
+    const upstreamPath = reporting ? (scope ? reportTarget(scope) : false) : backendPath(path, query);
     if (upstreamPath === null) return deny(res, 404);
     if (!upstreamPath || browserAuthority(req) || req.headers['transfer-encoding'] || (req.headers['content-length'] && req.headers['content-length'] !== '0')) {
+      return deny(res, 400);
+    }
+    if (reporting && Object.keys(req.headers).some((name) => /^(?:x-)?scope-node-id$/.test(name.replaceAll('_', '-')))) {
       return deny(res, 400);
     }
     try {
       const token = await verifiedBearer(req);
       if (!token) return deny(res, 401, 'A current signed fixture session is required.');
       // backendPath has already validated the exact route and record UUID.
-      const limit = upstreamPath.startsWith('/v1/knowledge/csv:') ? MAX_KNOWLEDGE_DETAIL_RESPONSE : MAX_RESPONSE;
+      const limit = reporting ? reportMaxBytes : upstreamPath.startsWith('/v1/knowledge/csv:') ? MAX_KNOWLEDGE_DETAIL_RESPONSE : MAX_RESPONSE;
       const upstream = await loopbackRequest(BACKEND, upstreamPath, { authorization: `Bearer ${token}`, accept: 'application/json' }, limit);
+      if (reporting && (upstream.status === 200 || upstream.status === 503)) {
+        if (!/^application\/json(?:\s*;|$)/i.test(upstream.contentType ?? '')) return deny(res, 502);
+        const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(upstream.body));
+        const report = parseReport(upstream.status, body, scope);
+        return report ? send(res, upstream.status, JSON.stringify(report)) : deny(res, 502);
+      }
       if (upstream.status !== 200) return deny(res, upstream.status >= 400 && upstream.status <= 599 ? upstream.status : 502);
       if (!/^application\/json(?:\s*;|$)/i.test(upstream.contentType ?? '')) return deny(res, 502);
       return send(res, 200, upstream.body);

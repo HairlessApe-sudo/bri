@@ -280,10 +280,11 @@ class StagedCsvTests(unittest.TestCase):
             private_socket=self.socket, auth_transport=httpx.MockTransport(self.provider),
         )
         self.assertFalse(hasattr(app.state, 'csv_worker'))
-        self.assertEqual(len(app.routes), 4)
+        self.assertEqual(len(app.routes), 5)
         self.assertEqual({(route.path, frozenset(route.methods)) for route in app.routes if isinstance(route, APIRoute)}, {
             (path, frozenset({'GET'})) for path in ('/v1/knowledge', '/v1/knowledge/search',
-                                                  '/v1/knowledge/{record_id}', '/v1/sources/{record_id}')
+                                                  '/v1/knowledge/{record_id}', '/v1/sources/{record_id}',
+                                                  '/v1/reports/published-knowledge-inventory')
         })
         headers = {'Authorization': self.headers['Authorization']}
         with TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50400)) as client:

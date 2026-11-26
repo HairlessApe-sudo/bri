@@ -3,6 +3,13 @@
 Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A15 — Published knowledge inventory
+
+- A15 accepted for the approved local synthetic-data-only scope, subject to documented residual availability-side-channel risk acceptance. The finding remains unresolved and is a mandatory production security gate.
+- Renewed independent review `deleg_26732135`: ACCEPT LOCAL ONLY for verified implementation tree `972c113ed9bc2519782226350fe2d99f2aba98d8`; the delta from `0ebe9ad844b0a700e63aa1faf14c4868a16d3ff1` introduced no new blockers. Closeout changes documentation only.
+- Recovered verification (exit 0): 623 backend and 150 frontend tests passed without skips, both TypeScript checks and the optimized release build passed, and the signed Chromium demo confirmed API/UI parity and revocation. All 32 migration checksums matched, replay applied no changes, and all 57 expected non-ledger tables retained forced RLS.
+- AM2 permits conditional local-only acceptance of the unresolved availability channel, not technical remediation. Hidden rows do not enter the count, evidence or logical overflow, but may increase physical work enough to produce an unavailable response. No such timeout was demonstrated and no direct disclosure was identified. See the [report architecture](../architecture/published-knowledge-inventory.md#residual-availability-risk-a15-am2) and [production gate](risk-register.md#a15-am2-production-gate--residual-reporting-availability-channel). Real customer data and hosted production execution require a separate production security assessment and approved risk treatment.
+
 ## A14 — Knowledge review workspace (2026-11-20)
 
 - Local synthetic-only operator workspace for the A12 review queue and decision workflow. See [knowledge review workspace](../architecture/knowledge-review-workspace.md). Approval remains separate from publication, and no hosted write is authorized.

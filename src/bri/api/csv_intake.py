@@ -55,6 +55,11 @@ _PROPOSAL = re.compile(r'csv:' + _UUID.pattern)
 _READ_DETAIL = re.compile(rb'/v1/(?:knowledge|sources)/csv:([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})')
 _READ_LIST = b'/v1/knowledge'
 _READ_SEARCH = b'/v1/knowledge/search'
+_REPORT_PATH = '/v1/reports/published-knowledge-inventory'
+_READ_REPORT = _REPORT_PATH.encode('ascii')
+_REPORT_MAX_ROWS = 1000
+_REPORT_MAX_BYTES = 512 * 1024
+_REPORT_HASH = re.compile(r'[0-9a-f]{64}')
 _A13_LIST_MAX_ITEMS = 100
 _A13_LIST_PREVIEW_CHARS = 512
 _A13_LIST_MAX_BYTES = 1024 * 1024  # Entire encoded JSON array, including delimiters.
@@ -69,6 +74,8 @@ _CLAIM = 'SELECT job_id,tenant_id,object_key,original_sha256,byte_count,attempt 
 _COMPLETE = 'SELECT bri.csv_complete(%s,%s,%s,%s,%s,%s,%s)'
 _FAIL = 'SELECT bri.csv_fail(%s,%s,%s,%s,%s)'
 _PUBLISHED = 'SELECT * FROM bri.csv_read_published(%s,%s,%s,%s,%s)'
+_REPORT = '''SELECT proposal_id,source_version_id,original_sha256,content_sha256,first_line,last_line
+    FROM bri.csv_read_reporting(%s,%s,%s,%s,%s,%s) LIMIT %s'''
 _ROLE = '''SELECT EXISTS (
     SELECT FROM pg_catalog.pg_roles r
     WHERE r.rolname = current_user AND r.rolname = session_user AND r.rolname = %s
@@ -134,12 +141,25 @@ def _reader_request(request: Request) -> None:
     if (request.method != 'GET' or not raw or not raw.isascii()
             or raw.decode('ascii') != request.scope['path']):
         raise HTTPException(404, 'Not Found')
-    if raw not in (_READ_LIST, _READ_SEARCH):
+    if raw not in (_READ_LIST, _READ_SEARCH, _READ_REPORT):
         detail = _READ_DETAIL.fullmatch(raw)
         if detail is None or not UUID(detail[1].decode('ascii')).int:
             raise HTTPException(404, 'Not Found')
 
     query = request.scope['query_string']
+    if raw == _READ_REPORT:
+        prefix = b'scope_node_id='
+        if (len(query) <= len(prefix) + 128 * 3 and re.fullmatch(rb'scope_node_id=[^&]+', query)
+                and not re.search(rb'%(?![0-9A-Fa-f]{2})', query)
+                and not any(h.replace('_', '-') == 'scope-node-id' for h in request.headers)):
+            try:
+                node = unquote_plus(query[len(prefix):].decode('ascii'), errors='strict')
+                if _NODE.fullmatch(node):
+                    request.state.report_node = node
+                    return
+            except UnicodeError:
+                pass
+        raise HTTPException(400, 'Invalid CSV report scope')
     if raw == _READ_SEARCH:
         # At most 512 UTF-8 characters, even when all bytes are percent-escaped.
         if (len(query) <= 2 + 512 * 4 * 3 and re.fullmatch(rb'q=[^&]+', query)
@@ -358,7 +378,8 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
             response = JSONResponse({'detail': _INVALID}, status_code=422)
         except Exception:  # Do not reflect SQL, storage, auth or parser diagnostics.
             response = JSONResponse({'detail': f'{surface} unavailable'}, status_code=503)
-        response.headers.update({'Cache-Control': 'no-store', 'X-Request-ID': str(cid)})
+        cache = 'private, no-store' if reader_only and request.scope['path'].startswith(_REPORT_PATH) else 'no-store'
+        response.headers.update({'Cache-Control': cache, 'X-Request-ID': str(cid)})
         return response
 
     def resolve(ident, action: str, node: str | None):
@@ -485,7 +506,7 @@ def create_staged_csv_reader_app(
     *, identity_scope: Scope, reader_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, dbname: str = 'postgres', port: int = 5432,
 ) -> FastAPI:
-    """Assemble A13 with only native identity and authorized published reads.
+    """Assemble the isolated reader with native identity and authorized published reads.
 
     Serve directly on loopback with proxy headers and access logs disabled.
     No intake or worker connection, quarantine store, or release route is mounted.
@@ -495,7 +516,63 @@ def create_staged_csv_reader_app(
     reader_db = _restricted(reader_scope, socket, dbname, port, _READER)
     app, authorize = _staged_app(identity_db, auth_transport, reader_only=True)
     _mount_reads(app, authorize, reader_db, a13=True)
+    _mount_reporting(app, authorize, reader_db)
     return app
+
+
+def _mount_reporting(app: FastAPI, authorize: _Authorize, reader_db: Scope) -> None:
+    def report_response(authority: _Authority, node: str, metric: dict[str, str | int]) -> JSONResponse:
+        with reader_db() as db, db.transaction():
+            db.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY')
+            _check_role(db, _READER)
+            # Must precede the report statement so PostgreSQL arms its timer.
+            db.execute("SET LOCAL statement_timeout = '5000ms'")
+            rows = db.execute(_REPORT, (
+                authority.tenant, authority.actor, UUID(authority.uid), authority.sid, authority.issuer, node,
+                _REPORT_MAX_ROWS + 1,
+            )).fetchmany(_REPORT_MAX_ROWS + 1)
+
+        if len(rows) > _REPORT_MAX_ROWS:
+            raise DatabaseUnavailable('CSV report exceeds row budget')
+        evidence = []
+        seen = set()
+        for record, version, original, content, first, last in rows:
+            # Validate the minimal projection and keep evidence compatible with the
+            # guarded knowledge/source detail routes. Never emit partial evidence.
+            if (not isinstance(record, str) or len(record) != 40 or record != record.lower()
+                    or not _PROPOSAL.fullmatch(record) or not UUID(record[4:]).int
+                    or version != record or record in seen
+                    or not all(isinstance(v, str) and _REPORT_HASH.fullmatch(v) for v in (original, content))
+                    or type(first) is not int or type(last) is not int or not 1 <= first <= last <= 2147483647):
+                raise DatabaseUnavailable('Invalid CSV report provenance')
+            seen.add(record)
+            evidence.append({'record_id': record, 'source_version_id': version, 'original_sha256': original,
+                             'content_sha256': content, 'first_line': first, 'last_line': last})
+
+        evidence.sort(key=lambda entry: entry['record_id'])
+        response = JSONResponse({'result': {**metric, 'status': 'complete', 'count': len(evidence),
+                                            'evidence': evidence}})
+        if len(response.body) > _REPORT_MAX_BYTES:
+            raise DatabaseUnavailable('CSV report exceeds encoded byte budget')
+        return response
+
+    @app.get(_REPORT_PATH)
+    async def published_knowledge_inventory(request: Request):
+        await _body(request, 0)
+        node = request.state.report_node
+        metric: dict[str, str | int] = {'metric_id': 'published_knowledge_inventory', 'metric_version': 1,
+                                        'scope_node_id': node}
+        try:
+            authority = await authorize(request, 'knowledge:read', node)
+            return await run_in_threadpool(report_response, authority, node, metric)
+        except psycopg.errors.InsufficientPrivilege:
+            raise HTTPException(403, 'Current authorized BRI session required') from None
+        except HTTPException as exc:
+            if exc.status_code != 503:
+                raise
+        except Exception:
+            pass  # Never reflect infrastructure, resource, or provenance diagnostics.
+        return JSONResponse({'result': {**metric, 'status': 'unavailable'}}, status_code=503)
 
 
 def _a13_csv_preview(content: str) -> str:
