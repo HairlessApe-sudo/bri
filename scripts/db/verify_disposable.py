@@ -37,7 +37,8 @@ NATIVE = {'test_security_lifecycle_postgres', 'test_provider_security_events_pos
           'test_account_current_grants_postgres', 'test_account_current_grants_api',
           'test_mfa_reset_administration_postgres', 'test_csv_intake_postgres', 'test_csv_intake_api',
           'test_csv_review_workspace_postgres', 'test_csv_review_workspace_api', 'test_csv_reporting_postgres',
-          'test_xlsx_intake_postgres', 'test_xlsx_intake_api'}
+          'test_xlsx_intake_postgres', 'test_xlsx_intake_api',
+          'test_xlsx_governance_postgres', 'test_xlsx_governance_api'}
 GOV = 'test_client_governance_pg'
 
 

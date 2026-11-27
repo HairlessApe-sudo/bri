@@ -14,6 +14,13 @@ Every backend test module runs directly from the worktree. Governance retains it
 
 The XLSX lifecycle suite (`test_xlsx_intake_postgres`) uses its own TCP-disabled PostgreSQL 16 cluster. The migration does not create or grant the two stage roles. Only after checking the private socket and release ACLs does the suite create `bri_xlsx_submitter` and `bri_xlsx_worker` and grant schema usage and the corresponding three entry points to each; neither role has table privileges. The suite writes synthetic XLSX lineage only in its cluster and exercises an upload, strict extraction, and status read using the real stage roles.
 
+The XLSX governance suite (`test_xlsx_governance_postgres`) uses a separate TCP-disabled PostgreSQL 16 cluster. It verifies the release catalog before provisioning the four isolated reviewer, publication, access and reader fixture logins with exact routine grants. It exercises pre-lock visibility, a concurrent session revocation, atomic decision/audit rollback, append-only publication, independent principal-targeted gates, and exact-version evidence through those logins. The accepted CSV authority function is used only as a test oracle for the mirrored XLSX review/read predicates. The combined PostgreSQL XLSX suites can be run from the repository root:
+
+```sh
+BRI_TEST_PG_BIN=/absolute/path/to/trusted/postgresql-16/bin PYTHONPATH=src:tests \
+  .venv/bin/python -m unittest test_xlsx_intake_postgres test_xlsx_governance_postgres -v
+```
+
 For just the tenant RLS and durable repository suites use `.venv/bin/python -IB scripts/db/verify_disposable.py --fixture-suites`. Only the verifier prepares the role-permission fixtures in a local clone, as `bri_app` at READ COMMITTED; the actual tenant RLS tests still use SERIALIZABLE and roll back. Durable repository tests each get a separate clone of the migrated database. Teardown drops only that clone, leaving application audit rows and their referenced principals untouched during the test. The suite no longer accepts ambient durable test DSNs.
 
 Offline guard checks: `.venv/bin/python -IB scripts/db/disposable/test_verify.py`. Frontend tests are separate: `(cd web && node --test tests/*.test.mjs)`. A local run does not verify hosted Supabase settings or authorize migration of any shared target.

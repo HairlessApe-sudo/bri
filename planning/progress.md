@@ -3,6 +3,12 @@
 Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A16.3 — Independent XLSX review, publication and evidence
+
+- Accepted for the local synthetic XLSX vertical slice only. See [architecture](../architecture/governed-xlsx-review.md) and [signed Chromium demo](../scripts/a16_3-demo.md). Validation, publication and both independent read gates remain separate; A13 and A15 v1 remain CSV-only.
+- Verified implementation tree `672434a2cafe930b06eab5a05b1426a12c4bcf23`: 730 backend and 165 frontend tests passed with no failures or skips; both TypeScript checks, optimized release build and signed Chromium demo exited 0. All 34 migration checksums matched; replay applied nothing and all 70 non-ledger tables retained forced RLS.
+- Independent review `deleg_2aac81ae` passed the exact implementation tree and cleared the stale maintenance replay blocker. A16.4 consolidation remains a separate assignment, as do all production gates, including A15's unresolved availability side channel.
+
 ## A16.2 — Governed XLSX submission and processing
 
 - Accepted for local synthetic data through immutable pending proposal creation only. See [architecture](../architecture/governed-xlsx-intake.md) and [signed demo](../scripts/a16_2-demo.md). No review, validation, publication or retrieval.

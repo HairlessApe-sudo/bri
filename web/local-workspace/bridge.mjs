@@ -3,6 +3,8 @@ import { isIPv4 } from 'node:net';
 import { createServerClient, parseCookieHeader } from '@supabase/ssr';
 import { reviewPagePath } from './review-contract.mjs';
 import { reviewTarget, forwardReview } from './review-bridge.mjs';
+import { intakeTarget, forwardIntake, governanceTarget, forwardGovernance } from './xlsx-bridge.mjs';
+import { isXlsxPagePath } from './xlsx-governance.mjs';
 import { parseReport, reportMaxBytes, reportPath, reportScope, reportTarget } from './reporting.mjs';
 
 export const LOCAL_HOST = '127.0.0.2';
@@ -51,8 +53,9 @@ export function isPrivateWorkspaceRequest(req) {
     && !Object.keys(req.headers).some((name) => /^(forwarded|via|x-real-ip|proxy-.*|x-forwarded-.*)$/.test(name));
 }
 
-function browserAuthority(req) {
-  return Object.keys(req.headers).some((name) => /^(authorization|x-node-id|(?:(?:x-)?bri-|x-)?(?:tenant|role|actor|principal|identity|issuer|auth-user|session)(?:-.*)?)$/.test(name));
+function browserAuthority(req, allowNode = false) {
+  return Object.keys(req.headers).some((name) => (!allowNode || name !== 'x-node-id')
+    && /^(authorization|x-node-id|(?:(?:x-)?bri-|x-)?(?:tenant|role|actor|principal|identity|issuer|auth-user|session)(?:-.*)?)$/.test(name));
 }
 
 // A direct numeric-loopback socket: no environment proxy/dispatcher, DNS, redirects or shared cache.
@@ -146,7 +149,7 @@ export function composeLocalWorkspace(nextHandler) {
         res.setHeader('cache-control', 'no-store');
         return nextHandler(req, res);
       }
-      if (path === '/review' || reviewPagePath.test(path)) {
+      if (path === '/review' || reviewPagePath.test(path) || isXlsxPagePath(path)) {
         if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
         res.setHeader('cache-control', 'no-store');
         return nextHandler(req, res);
@@ -156,6 +159,16 @@ export function composeLocalWorkspace(nextHandler) {
       }
       return deny(res, 404);
     }
+    const xlsxIntake = intakeTarget(path.slice(PREFIX.length), req.method, query);
+    if (typeof xlsxIntake === 'number') return deny(res, xlsxIntake);
+    if (xlsxIntake) return forwardIntake(req, res, xlsxIntake, {
+      browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest, send, deny,
+    });
+    const governance = governanceTarget(path.slice(PREFIX.length), req.method, query);
+    if (typeof governance === 'number') return deny(res, governance);
+    if (governance) return forwardGovernance(req, res, governance, {
+      browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest, send, deny,
+    });
     const review = reviewTarget(path.slice(PREFIX.length), req.method, query);
     if (typeof review === 'number') return deny(res, review);
     if (review) return forwardReview(req, res, review, {

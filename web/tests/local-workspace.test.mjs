@@ -240,6 +240,130 @@ test('private HTTP bridge uses a verified SSR cookie and preserves backend decis
     assert.doesNotMatch(unknown.body, /private evidence/);
   });
 
+  await t.test('XLSX intake forwards only signed fixed-origin binary submission and matching receipts', async () => {
+    const seen = [];
+    const job = '5607a17a-61be-4c19-a912-bbfe61d070e3';
+    const base = '/v1/intake/xlsx';
+    const media = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const workbook = Buffer.from([0x50, 0x4b, 0x00, 0xff]);
+    let extra = {};
+    await listen(t, 'http://127.0.0.1:8116', async (req, res) => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      seen.push({ path: req.url, headers: req.headers, body: Buffer.concat(chunks) });
+      res.writeHead(req.method === 'POST' ? 202 : 200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: job, state: 'ready', ...extra }));
+    });
+    const headers = { cookie, origin: ui, 'content-type': media, 'content-length': workbook.length,
+      'x-node-id': 'fixture.node:1', 'idempotency-key': job, 'x-random': 'strip' };
+    const post = (overrides = {}) => get(`/api/bri-local${base}`, { ...headers, ...overrides }, 'POST', '127.0.0.1', workbook);
+    for (const [overrides, code] of [[{ origin: undefined }, 403], [{ cookie: forgedCookie }, 401],
+      [{ 'x-tenant-id': 'spoof' }, 400], [{ 'x-dev-identity': 'spoof' }, 400], [{ 'x_scope_id': 'spoof' }, 400],
+      [{ 'content-type': 'text/csv' }, 415],
+      [{ 'x-node-id': 'bad node' }, 400], [{ 'idempotency-key': 'invalid' }, 400],
+      [{ 'content-length': 5000001 }, 413]]) {
+      const supplied = { ...headers, ...overrides };
+      for (const key of Object.keys(supplied)) if (supplied[key] === undefined) delete supplied[key];
+      assert.equal((await get(`/api/bri-local${base}`, supplied, 'POST', '127.0.0.1', workbook)).status, code);
+    }
+    assert.equal(seen.length, 0);
+    const accepted = await post();
+    assert.equal(accepted.status, 202);
+    assert.equal(accepted.headers['cache-control'], 'no-store');
+    assert.deepEqual(JSON.parse(accepted.body), { id: job, state: 'ready' });
+    assert.deepEqual(seen[0].body, workbook);
+    assert.equal(seen[0].headers['x-node-id'], headers['x-node-id']);
+    assert.equal(seen[0].headers['idempotency-key'], job);
+    assert.ok(seen[0].headers.authorization?.endsWith(token));
+    for (const suppressed of ['cookie', 'x-random', 'origin']) assert.equal(seen[0].headers[suppressed], undefined);
+    const statusPath = `/api/bri-local${base}/${job}`;
+    assert.equal((await get(`${statusPath}?`, { cookie })).status, 400);
+    assert.equal((await get(statusPath, { cookie, 'x-node-id': 'spoof' })).status, 400);
+    assert.equal((await get(statusPath, { cookie })).status, 200);
+    assert.deepEqual(seen.map((item) => item.path), [base, `${base}/${job}`]);
+    extra = { id, private_key: 'never expose' };
+    const wrong = await get(statusPath, { cookie });
+    assert.equal(wrong.status, 502);
+    assert.doesNotMatch(wrong.body, /never expose/);
+  });
+
+  await t.test('XLSX governance queue is signed, bounded, and never forwards maintenance targets', async () => {
+    const seen = [];
+    const base = '/v1/knowledge/proposals/xlsx';
+    const queue = `/api/bri-local${base}`;
+    const cursor = 'c'.repeat(64);
+    const id = 'xlsx:5607a17a-61be-4c19-a912-bbfe61d070e3';
+    let body = { items: [{ id, node_id: 'fixture-node', state: 'proposed' }], next_cursor: cursor };
+    await listen(t, 'http://127.0.0.1:8117', (req, res) => {
+      seen.push({ path: req.url, headers: req.headers });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(typeof body === 'string' ? body : JSON.stringify(body));
+    });
+    for (const [path, headers, method, code] of [[queue, {}, 'GET', 401],
+      [queue, { cookie: forgedCookie }, 'GET', 401], [`${queue}?limit=21`, { cookie }, 'GET', 400],
+      [`${queue}?cursor=${cursor}&cursor=${cursor}`, { cookie }, 'GET', 400], [`${queue}?tenant=fake`, { cookie }, 'GET', 400],
+      [`${queue}/publish`, { cookie }, 'POST', 404], [`${queue}/`, { cookie }, 'GET', 404]]) {
+      assert.equal((await get(path, headers, method)).status, code, path);
+    }
+    assert.equal(seen.length, 0);
+    const input = `${queue}?limit=20&cursor=${cursor}`;
+    const result = await get(input, { cookie, 'x-random': 'strip' });
+    assert.equal(result.status, 200);
+    assert.deepEqual(JSON.parse(result.body), body);
+    assert.ok(seen[0].headers.authorization?.endsWith(token));
+    assert.equal(seen[0].headers.cookie, undefined);
+    assert.equal(seen[0].headers['x-random'], undefined);
+    assert.equal(seen[0].path, `${base}?limit=20&cursor=${cursor}`);
+    body = { items: Array(21).fill({ id, node_id: 'fixture-node', state: 'proposed' }), next_cursor: null };
+    assert.equal((await get(queue, { cookie })).status, 502);
+    body = JSON.stringify({ items: [], next_cursor: null });
+    body += ' '.repeat(512 * 1024 - Buffer.byteLength(body));
+    assert.equal((await get(queue, { cookie })).status, 200);
+    body += ' ';
+    assert.ok((await get(queue, { cookie })).status >= 500);
+    const detail = `${queue}/${encodeURIComponent(id)}`;
+    const action = `${detail}/decision`;
+    body = { id, node_id: 'fixture-node', state: 'proposed', sheet_id: '1', sheet_title: 'Policy', cell_range: 'A1',
+      cells: [{ row: 1, column: 1, value: ['text', 'synthetic'] }], next_cursor: null };
+    assert.equal((await get(detail, { cookie })).status, 200);
+    assert.equal(seen.at(-1).path, `${base}/${id}`);
+    assert.equal((await get(detail.replace('%3A', ':'), { cookie })).status, 404);
+    const post = (payload, headers = {}) => get(action, { cookie, origin: ui, 'content-type': 'application/json',
+      'content-length': Buffer.byteLength(payload), 'idempotency-key': id.slice(5), ...headers }, 'POST', '127.0.0.1', payload);
+    const valid = '{"decision":"approve"}';
+    const before = seen.length;
+    assert.equal((await post('{"decision":"approve","decision":"reject"}')).status, 400);
+    assert.equal((await post(valid, { 'idempotency-key': 'invalid' })).status, 400);
+    assert.equal((await post(valid, { cookie: forgedCookie })).status, 401);
+    assert.equal(seen.length, before);
+    body = { id, decision: 'approve' };
+    assert.deepEqual(JSON.parse((await post(valid)).body), body);
+    assert.equal(seen.at(-1).path, `${base}/${id}/decision`);
+    assert.equal(seen.at(-1).headers['idempotency-key'], id.slice(5));
+    body = { id, decision: 'reject' };
+    assert.equal((await post(valid)).status, 502);
+    const version = 'e50d72bc-5fa2-4891-b69b-c68225911a57';
+    const published = `/v1/knowledge/xlsx/${id.slice(5)}`;
+    const evidence = `${published}/evidence/${version}`;
+    const record = { record_id: id.slice(5), source_version_id: version, node_id: 'fixture-node' };
+    body = record;
+    const detailRead = await get(`/api/bri-local${published}`, { cookie });
+    assert.equal(detailRead.status, 200);
+    assert.deepEqual(JSON.parse(detailRead.body), record);
+    assert.equal(seen.at(-1).path, published);
+    assert.equal((await get(`/api/bri-local${published}?cursor=${cursor}`, { cookie })).status, 400);
+    body = { ...record, sheet_id: '1', sheet_title: 'Policy', cell_range: 'A1',
+      cells: [{ row: 1, column: 1, value: ['text', 'synthetic'] }], next_cursor: null };
+    const evidenceRead = await get(`/api/bri-local${evidence}?cursor=${cursor}`, { cookie });
+    assert.equal(evidenceRead.status, 200);
+    assert.deepEqual(JSON.parse(evidenceRead.body), body);
+    assert.equal(seen.at(-1).path, `${evidence}?cursor=${cursor}`);
+    body = { ...body, source_version_id: id.slice(5) };
+    const mismatch = await get(`/api/bri-local${evidence}`, { cookie });
+    assert.equal(mismatch.status, 502);
+    assert.doesNotMatch(mismatch.body, /synthetic/);
+  });
+
   await t.test('only knowledge detail accommodates an escaped 20 MB extraction', async () => {
     const project = (cell) => JSON.stringify({ headers: ['Test'], rows: [[cell]] });
     const padding = 20_000_000 - Buffer.byteLength(project('é'));

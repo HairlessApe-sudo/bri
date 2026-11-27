@@ -1,4 +1,4 @@
-# A13/A14/A15 local fixture workspace
+# Local fixture workspace
 
 From `web/`, with the existing dependencies installed, run `node local-workspace/server.mjs` in the same network namespace as the fixture servers. Open `http://127.0.0.2:3013/knowledge` for published evidence or `http://127.0.0.2:3013/review` for review. This is a separate Next app; ordinary `npm run dev`, `npm run build` and `npm start` do not mount it. The numeric listener addresses are fixed.
 
@@ -7,6 +7,8 @@ From `web/`, with the existing dependencies installed, run `node local-workspace
 | `127.0.0.2:3013` | Separate Next workspace plus its exact `/api/bri-local/v1/...` bridge. Use this exact numeric host, not `localhost` or `127.0.0.1`. |
 | `127.0.0.1:8013` | `create_staged_csv_reader_app` only. Bind directly to loopback; disable proxy headers and access logs. Do **not** use the mixed A12 intake listener or the normal API. |
 | `127.0.0.1:8114` | `create_staged_csv_review_app` only, backed by the disposable fixture database. Bind directly to loopback; disable proxy headers and access logs. |
+| `127.0.0.1:8116` | Isolated XLSX intake app, backed by the disposable fixture database and private quarantine. Bind directly to loopback; disable proxy headers and access logs. |
+| `127.0.0.1:8117` | Isolated XLSX governance app with separate reviewer and reader scopes in the disposable fixture database. Bind directly to loopback; disable proxy headers and access logs. |
 | `127.0.0.1:9013` | Synthetic Supabase-compatible provider. The bridge only reads `/auth/v1/.well-known/jwks.json` over this socket. Use the same ephemeral signing keys for the backend's independent verifier. |
 
 The parent demo harness authenticates the fixed synthetic user against the mock provider and collects `@supabase/ssr`'s `createServerClient` `setAll` output, including any cookie chunks. Install the cookies only on `127.0.0.2`, **host-only** (omit the `Domain` attribute), with `name: 'sb-bri-local-auth-token'`, `path: '/api/bri-local'`, `httpOnly: true`, and `sameSite: 'lax'`. Browser cookie scope does not include the port: the different numeric host keeps the cookie away from the reader, JWKS and release UI on `127.0.0.1`; the path keeps it off workspace page and asset requests. Use a dedicated browser context.
@@ -26,5 +28,9 @@ Failed processing is terminal and has no extraction or decision controls. Approv
 The local evidence UI displays no previous result while revalidating. On `pagehide`, it removes evidence and aborts pending reads synchronously. While parked, focus and visibility changes cannot restart reads. A persisted `pageshow` starts fresh reads under a new refresh key. User refresh and tab focus/visibility also revalidate while the page is active. This is request-time revocation, not a push guarantee for previously delivered data in a continuously open tab.
 
 Open `/reports` for the published knowledge inventory. Enter an exact node ID you are authorized to evaluate; the workspace does not look up or suggest nodes. The explicit evaluation sends `GET /api/bri-local/v1/reports/published-knowledge-inventory?scope_node_id=…` through the same signed reader on `:8013` with a **512 KiB** response cap. Editing the scope, evaluating again, or leaving the page clears the previous result. Evidence links open the existing independently authorized knowledge and source pages. See `scripts/a15-demo.md` for the disposable signed API/Chromium parity check.
+
+Open `/xlsx` to submit a synthetic `.xlsx` workbook (up to 5,000,000 bytes) for an exact node or explicitly read an existing job’s status. Submitting sends original bytes with a browser-generated idempotency key; if no receipt is confirmed, the workspace does not retry. Worker dispatch is not exposed here. `/xlsx/review` reads the signed queue and opens individual proposals. Approve or reject requires a second click to confirm. A conflict or uncertain result hides the displayed proposal and requires a fresh read and explicit new confirmation; no decision is automatically replayed.
+
+Open `/xlsx/knowledge` to look up a known record ID. The protected record detail links to its exact source version, which is authorized independently on every evidence-page request. The same refresh and page-lifecycle clearing rules above apply to XLSX. These pages do not publish, withdraw, grant, or revoke access. The XLSX bridge enforces an exact route/method allowlist, signed fixture cookies, same-origin POSTs, and a 512 KiB upstream response cap. The review queue shows at most 20 items; a worksheet evidence page spans at most 50 physical rows and uses opaque continuation cursors. Cell values are displayed as text, not evaluated or linked.
 
 Checks from `web/`: `node --test tests/*.test.mjs`, `npm run typecheck`, `node node_modules/typescript/bin/tsc --noEmit -p local-workspace/tsconfig.json`, and `npm run build` for the ordinary release app.
