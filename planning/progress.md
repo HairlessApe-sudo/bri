@@ -3,6 +3,12 @@
 Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A17 interim closeout and A18 preparation
+
+- [A17 remains on HOLD](../architecture/a17-interim-closeout.md). AM3 is partial evidence only; independent review retained HOLD. Governed selectable-text PDF is temporarily deferred, not removed from original MVP package 3. No resource limits, parser dependencies or production gates changed.
+- Carry dedicated ingestion-worker qualification into deployment and operational readiness (package 6). No host or cgroup changes are authorized.
+- [A18 unified CSV/XLSX search](../architecture/a18-unified-retrieval-proposal.md) is a proposal awaiting approval, not a delivered feature. A13 and A15 v1 remain CSV-only; all prior MVP carry-forwards remain open.
+
 ## A16.4 — Integrated XLSX acceptance
 
 - A16 is accepted for the approved local synthetic-data-only governed XLSX lifecycle. This acceptance does not authorize real customer data, hosted execution or production deployment. See the [acceptance matrix and runbook](a16-acceptance.md). The A16.3 implementation was delivered to GitHub; this closeout is documentation only.

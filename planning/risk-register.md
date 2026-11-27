@@ -29,6 +29,10 @@ Unresolved; conditional local synthetic-only risk acceptance requires renewed in
 
 Real customer data and hosted production execution are blocked pending the separate production security assessment and approved risk treatment specified in [the reporting architecture](../architecture/published-knowledge-inventory.md#residual-availability-risk-a15-am2).
 
+## Dedicated ingestion worker qualification — open
+
+[A17 interim closeout](../architecture/a17-interim-closeout.md) records AM3 as partial evidence only and retains the independent HOLD. Track supervisor-controlled containment and deployment-profile portability under deployment and operational readiness. Do not treat local process limits as group limits, or containment as exact PDF decoded-work accounting. No existing gate or risk rating is changed.
+
 ## Immediate blockers
 
 R-01, R-03, R-04, R-07 and R-16 must have reviewed controls and accountable owners before any real data, external model or production pilot. No implementation begins until separately authorized. Reassess likelihood/severity after threat modeling and customer discovery.
