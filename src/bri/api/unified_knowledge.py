@@ -1,4 +1,5 @@
 """Dedicated local signed-fixture API for unified governed knowledge reads."""
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -10,17 +11,33 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from bri.api.csv_intake import (
-    Scope, _APP, _NODE, _check_role, _private_request, _restricted, _stage_socket, _staged_app,
+from bri.api.authentication import (
+    AuthenticatedIdentity, AuthenticationRejected, AuthenticationUnavailable, SupabaseTokenVerifier,
 )
-from bri.api.database import DatabaseUnavailable
+from bri.api.csv_intake import (
+    Scope, _APP, _NODE, _ORIGIN, _check_role, _private_request, _restricted, _stage_socket, _staged_app,
+)
+from bri.api.database import Database, DatabaseUnavailable, _LIVE_SESSION_SQL
 from bri.api.xlsx_intake import _authority_args, _upload_body
 from bri.ingestion.xlsx_strict import _BAD_TITLE
 
 SEARCH = '/v1/knowledge/search'
+SEARCH_SCOPES = SEARCH + '/scopes'
 CSV_EVIDENCE = '/v1/knowledge/csv/{record_id}/versions/{version_id}/evidence'
 _ROLE = 'bri_unified_knowledge_reader'
 _SEARCH_SQL = 'SELECT bri.unified_knowledge_search(%s,%s,%s,%s,%s,%s,%s)'
+_SCOPES_SQL = 'SELECT bri.unified_knowledge_search_scopes(%s,%s,%s,%s,%s)'
+_DISCOVERY_IDENTITY_SQL = f'''SELECT m.tenant_id,p.principal_id
+    FROM bri.auth_identity_links i JOIN bri.auth_principals p USING (principal_id)
+    JOIN bri.auth_sessions s USING (auth_user_id,principal_id)
+    JOIN bri.auth_tenant_memberships m USING (principal_id)
+    WHERE (i.auth_user_id,i.auth_issuer,i.auth_subject,s.session_id)=(%s,%s,%s,%s)
+      AND i.status='active' AND i.provider_type='native'
+      AND p.status='active' AND p.deletion_requested_at IS NULL
+      AND m.status='active' AND m.membership_type IN ('user','superuser','admin')
+      AND NOT EXISTS (SELECT FROM bri.platform_superadmins x WHERE x.principal_id=p.principal_id)
+      AND ({_LIVE_SESSION_SQL})
+    LIMIT 2'''
 _EVIDENCE_SQL = 'SELECT bri.unified_csv_evidence(%s,%s,%s,%s,%s,%s,%s)'
 _UUID = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 _EVIDENCE_PATH = re.compile(CSV_EVIDENCE.replace('{record_id}', f'({_UUID})').replace('{version_id}', f'({_UUID})'))
@@ -145,6 +162,57 @@ def _bounded(data) -> JSONResponse:
     return response
 
 
+async def _verify_discovery_session(request: Request, transport: httpx.MockTransport) -> AuthenticatedIdentity:
+    auth = request.headers.getlist('authorization')
+    if len(auth) != 1 or not re.fullmatch(r'Bearer [^\s]{1,16384}', auth[0]):
+        raise HTTPException(401, 'Verified bearer identity required')
+    try:
+        async with httpx.AsyncClient(transport=transport, trust_env=False, timeout=5, follow_redirects=False) as client:
+            return await SupabaseTokenVerifier(_ORIGIN, 'csv-stage-only', client=client).verify(auth[0][7:])
+    except AuthenticationRejected:
+        raise HTTPException(401, 'Authentication rejected') from None
+    except AuthenticationUnavailable:
+        raise DatabaseUnavailable('Knowledge identity unavailable') from None
+
+
+def _discovery_identity(scope: Scope, identity: AuthenticatedIdentity) -> tuple[str, UUID, UUID, UUID, str]:
+    # Exact native identity, membership and live-session rows only. The
+    # protected reader independently evaluates the issuer, guards, tenant and
+    # exact-node permission. Do not construct a Principal or a grant inventory.
+    uid, sid = UUID(identity.auth_user_id), UUID(identity.session_id)
+    with scope() as db, db.transaction():
+        db.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY')
+        db.execute("SET LOCAL statement_timeout = '1000ms'")
+        _check_role(db, _APP)
+        Database._set_auth_user_context(db, str(uid))
+        rows = db.execute(_DISCOVERY_IDENTITY_SQL, (uid, identity.issuer, str(uid), sid)).fetchall()
+    if len(rows) != 1:
+        raise HTTPException(403, _SEARCH_DENIED)
+    tenant, actor = rows[0]
+    return tenant, actor, uid, sid, identity.issuer
+
+
+def _scope_receipt(data) -> JSONResponse:
+    if (type(data) is not dict or data.keys() != {'version', 'status', 'scopes'}
+            or type(data['version']) is not int or data['version'] != 1 or data['status'] != 'complete'
+            or type(data['scopes']) is not list or len(data['scopes']) > 500):
+        raise DatabaseUnavailable('Invalid scope receipt envelope')
+    seen = set()
+    previous = None
+    for entry in data['scopes']:
+        if type(entry) is not dict or entry.keys() != {'scope_node_id', 'display_label'}:
+            raise DatabaseUnavailable('Invalid scope entry')
+        node, label = entry['scope_node_id'], entry['display_label']
+        if not isinstance(node, str) or not _NODE.fullmatch(node) or not isinstance(label, str) or node in seen:
+            raise DatabaseUnavailable('Invalid scope association')
+        key = (label, node)  # Unicode scalar order is UTF-8 byte order (PostgreSQL COLLATE C).
+        if previous is not None and key <= previous:
+            raise DatabaseUnavailable('Invalid scope ordering')
+        previous = key
+        seen.add(node)
+    return _bounded(data)
+
+
 def create_staged_unified_knowledge_app(
     *, identity_scope: Scope, reader_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, dbname: str = 'postgres', port: int = 5432,
@@ -160,10 +228,12 @@ def create_staged_unified_knowledge_app(
         path = request.scope['path']
         evidence = _EVIDENCE_PATH.fullmatch(path)
         search = path == SEARCH and request.method == 'POST'
+        discovery = path == SEARCH_SCOPES and request.method == 'GET'
         try:
             _private_request(request, app, guarded_routes=True)
             if (request.scope.get('raw_path') != path.encode('utf-8') or not (
-                    search or (evidence and request.method == 'GET' and all(UUID(v).int for v in evidence.groups())))):
+                    search or discovery or (evidence and request.method == 'GET'
+                                            and all(UUID(v).int for v in evidence.groups())))):
                 raise HTTPException(404, 'Not Found')
             headers = request.headers
             origins = headers.getlist('origin')
@@ -173,6 +243,8 @@ def create_staged_unified_knowledge_app(
                     'sub', 'sid', 'node-id', 'scope-id', 'user-id', 'auth-user', 'permissions', 'content-encoding',
                     'content-disposition', 'content-range', 'expect', 'range', 'trailer', 'idempotency-key'))
                     or (not search and any(h in headers for h in ('content-type', 'transfer-encoding')))
+                    or (discovery and any(h in headers for h in ('permission', 'scope', 'scope-node-id',
+                                                                 'identity', 'identity-id', 'membership')))
                     or ('transfer-encoding' in headers and (headers.getlist('transfer-encoding') != ['chunked']
                                                            or 'content-length' in headers))):
                 raise HTTPException(400, _INVALID)
@@ -180,10 +252,10 @@ def create_staged_unified_knowledge_app(
         except HTTPException as exc:
             response = JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
         except psycopg.errors.InsufficientPrivilege:
-            response = JSONResponse({'detail': _SEARCH_DENIED if search else _EVIDENCE_DENIED},
-                                    status_code=403 if search else 404)
+            response = JSONResponse({'detail': _SEARCH_DENIED if search or discovery else _EVIDENCE_DENIED},
+                                    status_code=403 if search or discovery else 404)
         except Exception:
-            response = JSONResponse({'version': 1, 'status': 'unavailable'} if search else {'detail': 'Knowledge evidence unavailable'},
+            response = JSONResponse({'version': 1, 'status': 'unavailable'} if search or discovery else {'detail': 'Knowledge evidence unavailable'},
                                     status_code=503)
         response.headers.update({'Cache-Control': 'private, no-store', 'X-Request-ID': str(uuid4())})
         return response
@@ -201,6 +273,24 @@ def create_staged_unified_knowledge_app(
         if data is None:
             raise HTTPException(403, _SEARCH_DENIED)
         return _search_receipt(data)
+
+    @app.get(SEARCH_SCOPES)
+    async def search_scopes(request: Request):
+        try:
+            async with asyncio.timeout(5):
+                await _upload_body(request, 0)
+                verified = await _verify_discovery_session(request, auth_transport)
+                context = await run_in_threadpool(_discovery_identity, identity, verified)
+        except (TimeoutError, psycopg.Error):
+            raise DatabaseUnavailable('Knowledge identity unavailable') from None
+        try:
+            async with asyncio.timeout(7):
+                data = await run_in_threadpool(_read, reader, _SCOPES_SQL, context)
+        except psycopg.errors.InsufficientPrivilege as exc:
+            if exc.diag.message_primary == 'Knowledge scope denied':
+                raise HTTPException(403, _SEARCH_DENIED) from None
+            raise DatabaseUnavailable('Knowledge scope dependency denied') from None
+        return _scope_receipt(data)
 
     @app.get(CSV_EVIDENCE)
     async def csv_evidence(request: Request, record_id: str, version_id: str):

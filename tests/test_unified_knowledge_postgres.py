@@ -14,6 +14,7 @@ from bri.ingestion.csv_intake import extract_bounded_csv
 ROLE = 'bri_unified_knowledge_reader'
 SEARCH = 'bri.unified_knowledge_search(text,uuid,uuid,uuid,text,text,text)'
 EVIDENCE = 'bri.unified_csv_evidence(text,uuid,uuid,uuid,text,uuid,uuid)'
+SCOPES = 'bri.unified_knowledge_search_scopes(text,uuid,uuid,uuid,text)'
 
 
 @unittest.skipUnless(os.getenv('BRI_TEST_PG_BIN'), 'requires private PostgreSQL 16')
@@ -35,11 +36,98 @@ class UnifiedKnowledgePostgresTests(unittest.TestCase):
             assert db.execute("SELECT inet_server_addr(),current_setting('listen_addresses')").fetchone() == (None, '')
             db.execute(f'CREATE ROLE {ROLE} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS '
                        'NOCREATEROLE NOCREATEDB NOREPLICATION')
-            db.execute(f'GRANT USAGE ON SCHEMA bri TO {ROLE}; GRANT EXECUTE ON FUNCTION {SEARCH}, {EVIDENCE} TO {ROLE}')
+            db.execute(f'GRANT USAGE ON SCHEMA bri TO {ROLE}; GRANT EXECUTE ON FUNCTION {SEARCH}, {EVIDENCE}, {SCOPES} TO {ROLE}')
+
+    def test_search_scope_discovery_does_not_need_knowledge(self):
+        with self.connect('postgres') as db:
+            expected = db.execute("SELECT display_name FROM bri.org_nodes WHERE tenant_id=%s AND node_id='team'",
+                                  (self.tenant,)).fetchone()[0]
+        result = self.read('unified_knowledge_search_scopes')
+        self.assertEqual(result, {'version': 1, 'status': 'complete', 'scopes': [
+            {'scope_node_id': 'team', 'display_label': expected}]})
+        self.publish_csv(allow=False)
+        self.assertEqual(self.read('unified_knowledge_search_scopes'), result)
+        self.publish_csv()
+        self.assertEqual(self.read('unified_knowledge_search_scopes'), result)
+
+    def test_search_scope_discovery_exact_authority_and_revocation(self):
+        actor, sub, _ = self.actors[2]
+        with self.connect('postgres') as db:
+            db.execute("INSERT INTO bri.org_nodes VALUES (%s,'sibling','team','Same','root'),"
+                       "(%s,'child','team','Child','team'),(%s,'independent','team','Same','root')",
+                       (self.tenant, self.tenant, self.tenant))
+            db.execute("UPDATE bri.org_nodes SET display_name='Same' WHERE (tenant_id,node_id)=(%s,'team')",
+                       (self.tenant,))
+            db.execute("INSERT INTO bri.app_roles VALUES (%s,'org','Org reader'),(%s,'read','Read')",
+                       (self.tenant, self.tenant))
+            db.execute("INSERT INTO bri.role_permissions VALUES (%s,'org','organisation:read'),"
+                       "(%s,'read','knowledge:read')", (self.tenant, self.tenant))
+            db.execute("INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id) "
+                       "VALUES (%s,%s,'org','sibling'),(%s,%s,'csv','independent'),(%s,%s,'read','independent')",
+                       (self.tenant, actor, self.tenant, actor, self.tenant, actor))
+            db.execute("UPDATE bri.auth_role_assignments SET status='revoked' WHERE "
+                       "(tenant_id,principal_id,role_id,scope_node_id)=(%s,%s,'csv','team')",
+                       (self.tenant, self.actors[0][0]))
+            for i in (0, 2):
+                self.actors[i] = (*self.actors[i][:2], uuid4())
+                db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                           'VALUES (%s,%s,%s,clock_timestamp())', self.actors[i])
+        identity = self.actors[2]
+        name = 'unified_knowledge_search_scopes'
+        self.assertEqual(self.read(name, identity=identity)['scopes'], [
+            {'scope_node_id': n, 'display_label': 'Same'} for n in ('independent', 'team')])
+        self.assertEqual(self.search('nothing', 'independent', identity=identity), [])
+        for n in ('root', 'sibling', 'child'):
+            with self.subTest(node=n), self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                self.search('nothing', n, identity=identity)
+        self.assertEqual(self.read(name)['scopes'], [])  # administrator, no applicable grant
+        for tenant, issuer, who in ((self.foreign, csv.ISSUER, identity),
+                                    (self.tenant, 'unbound', identity),
+                                    (self.tenant, csv.ISSUER, self.actors[3])):
+            with self.subTest(tenant=tenant, issuer=issuer, identity=who), \
+                    self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                self.read(name, tenant=tenant, issuer=issuer, identity=who)
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_role_assignments SET status='revoked' WHERE "
+                       "(tenant_id,principal_id,scope_node_id)=(%s,%s,'independent')", (self.tenant, actor))
+        # The governance write can invalidate the old session; a fresh session
+        # must never rediscover the revoked scope.
+        with self.connect('postgres') as db:
+            identity = (actor, sub, uuid4())
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', identity)
+        self.assertEqual(self.read(name, identity=identity)['scopes'], [{'scope_node_id': 'team', 'display_label': 'Same'}])
+        with self.connect('postgres') as db:
+            db.execute('UPDATE bri.auth_sessions SET revoked_at=clock_timestamp() WHERE session_id=%s', (identity[2],))
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            self.read(name, identity=identity)
+
+    def test_search_scope_discovery_eligible_limit_excludes_hidden_nodes(self):
+        actor, sub, _ = self.actors[2]
+        with self.connect('postgres') as db:
+            db.execute("INSERT INTO bri.org_nodes SELECT %s,'node-'||n,'team','Label','root' "
+                       "FROM generate_series(1,1501) n", (self.tenant,))
+            db.execute("INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id) "
+                       "SELECT %s,%s,'csv','node-'||n FROM generate_series(1,499) n", (self.tenant, actor))
+            identity = (actor, sub, uuid4())
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', identity)
+        scopes = self.read('unified_knowledge_search_scopes', identity=identity)['scopes']
+        self.assertEqual(len(scopes), 500)
+        self.assertEqual([s['scope_node_id'] for s in scopes[:-1]], sorted(f'node-{i}' for i in range(1,500)))
+        self.assertEqual(scopes[-1], {'scope_node_id': 'team', 'display_label': 'Team'})
+        with self.connect('postgres') as db:
+            db.execute("INSERT INTO bri.auth_role_assignments(tenant_id,principal_id,role_id,scope_node_id) "
+                       "VALUES (%s,%s,'csv','node-500')", (self.tenant, actor))
+            identity = (actor, sub, uuid4())
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', identity)
+        with self.assertRaises(psycopg.errors.ProgramLimitExceeded):
+            self.read('unified_knowledge_search_scopes', identity=identity)
 
     def test_protected_entry_points_exist_without_app_or_public_acl(self):
         with self.connect('bri_app') as db:
-            for signature in (SEARCH, EVIDENCE):
+            for signature in (SEARCH, EVIDENCE, SCOPES):
                 row = db.execute('''SELECT p.prosecdef, p.provolatile,
                     has_function_privilege(p.oid,'EXECUTE'), EXISTS (
                         SELECT FROM aclexplode(p.proacl) a WHERE a.grantee=0)
@@ -276,7 +364,8 @@ class UnifiedKnowledgePostgresTests(unittest.TestCase):
         with self.connect(ROLE) as db:
             rows = db.execute('''SELECT p.proname FROM pg_proc p WHERE p.pronamespace='bri'::regnamespace
                                  AND has_function_privilege(p.oid,'EXECUTE') ORDER BY 1''').fetchall()
-            self.assertEqual(rows, [('unified_csv_evidence',), ('unified_knowledge_search',)])
+            self.assertEqual(rows, [('unified_csv_evidence',), ('unified_knowledge_search',),
+                                    ('unified_knowledge_search_scopes',)])
             self.assertEqual(db.execute('''SELECT count(*) FROM pg_class c WHERE c.relnamespace='bri'::regnamespace
                 AND c.relkind IN ('r','v','p','m','f')
                 AND has_table_privilege(c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')''').fetchone(), (0,))

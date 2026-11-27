@@ -29,6 +29,10 @@ Unresolved; conditional local synthetic-only risk acceptance requires renewed in
 
 Real customer data and hosted production execution are blocked pending the separate production security assessment and approved risk treatment specified in [the reporting architecture](../architecture/published-knowledge-inventory.md#residual-availability-risk-a15-am2).
 
+## A18.2-AM4 — scope-discovery workload and mandatory A20 gate
+
+The architecture owner conditionally accepts the documented revoked-assignment and permission-catalog workload, and associated potential timing/availability inference, for local synthetic development only, subject to renewed independent review of the AM3 implementation. This is not remediation or production acceptance. The [scope-discovery decision](../architecture/a18-scope-discovery-local-risk.md) records measured and structural findings, explicit exclusions, and the mandatory A20 deployment-readiness assessment. No real data, hosted or production execution until approved treatment and independent verification of the actual deployment. The active-only assignment access path remains an assessment candidate, not an approved index. A15 and A18.1 gates remain separate.
+
 ## A18.1-AM4 — separate residual workload, timing and availability gate
 
 The architecture owner conditionally accepts the documented physical workload, timing and availability-inference risk for local synthetic-data development only. This is not implementation acceptance. AM2 measured a 3.901 to 18.102 ms sibling-node median increase; it did not observe a complete-to-unavailable transition or establish timing noninterference. Unilateral grant-population dependence is a structural finding, not a measured timing series. No severity or likelihood is assigned. Real customer data, hosted and production use are prohibited pending the separate [A18 production security gate](../architecture/a18-backend-local-risk.md#production-prohibition). A15's separate gate is unchanged.

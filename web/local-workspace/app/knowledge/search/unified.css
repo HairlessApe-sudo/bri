@@ -1,0 +1,17 @@
+.unified-workspace .unified-form label { color: var(--forest-deep); font-weight: 700; }
+.unified-scope-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: .6rem; }
+.unified-workspace select { display: block; width: 100%; max-width: 40rem; padding: .6rem; border: 1px solid #9aaba2; background: white; color: var(--ink); font: inherit; }
+.unified-workspace button:not([type=submit]) { border: 1px solid #9aaba2; border-radius: 4px; padding: .5rem .7rem; color: var(--forest-deep); background: #f9fcfa; cursor: pointer; }
+.unified-workspace button:disabled { cursor: not-allowed; }
+.unified-workspace select:focus-visible, .unified-workspace summary:focus-visible { outline: 3px solid #92cdb5; outline-offset: 3px; }
+.unified-workspace .state-message { color: #4b5e56; min-height: 0; }
+.unified-workspace .knowledge-search { margin-top: .6rem; }
+.unified-workspace #unified-query-help { color: #4b5e56; }
+.unified-workspace .unified-results { padding-left: 1.5rem; }
+.unified-workspace .citation-excerpt { white-space: pre-wrap; font-size: 1rem; color: var(--ink); }
+.unified-workspace details { margin-top: .9rem; }
+.unified-workspace summary { color: var(--forest-deep); cursor: pointer; }
+@media (max-width: 650px) {
+  .sidebar { flex-wrap: wrap; }
+  .sidebar .main-nav { flex-wrap: wrap; }
+}

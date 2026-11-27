@@ -30,6 +30,7 @@ class UnifiedKnowledgeTests(TestCase):
         self.temp_configured = True
         self.commit_failure = False
         self.receipt = {'version': 1, 'status': 'complete', 'results': []}
+        self.scope_identity = ('fixture-tenant', self.actor)
         self.active = self.enterContext(patch.object(Database, 'auth_session_is_active', return_value=True))
         self.resolve = self.enterContext(patch.object(Database, 'resolve_authenticated_principal', return_value=Principal(
             str(self.actor), frozenset({'fixture-tenant'}), (AccessGrant('fixture-tenant', 'knowledge:read', self.node),),
@@ -55,6 +56,10 @@ class UnifiedKnowledgeTests(TestCase):
 
     def execute(self, sql, args=()):
         self.calls.append((sql, args))
+        if 'current_setting(\'bri.auth_user_id\'' in sql:
+            return SimpleNamespace(fetchone=lambda: (USER_ID,))
+        if 'auth_sessions' in sql and 'auth_tenant_memberships' in sql:
+            return SimpleNamespace(fetchall=lambda: [self.scope_identity] if self.scope_identity else [])
         if 'temp_file_limit' in sql:
             return SimpleNamespace(fetchone=lambda: (self.temp_configured,))
         if 'bri.unified_' in sql:
@@ -72,6 +77,79 @@ class UnifiedKnowledgeTests(TestCase):
             private_socket=self.socket, auth_transport=httpx.MockTransport(self.provider),
         )
         return self.enterContext(TestClient(app, base_url='http://127.0.0.1', client=('127.0.0.1', 50000)))
+
+    def test_scope_identity_resolution_does_not_load_shared_permission_inventory(self):
+        self.resolve.side_effect = AssertionError('unbounded permission inventory invoked')
+        self.receipt = {'version': 1, 'status': 'complete', 'scopes': []}
+        reply = self.start().get('/v1/knowledge/search/scopes', headers=self.headers)
+        self.assertEqual((reply.status_code, reply.json()), (200, self.receipt))
+        self.resolve.assert_not_called()
+        self.active.assert_not_called()
+        query = next(sql for sql, _ in self.calls if 'auth_sessions' in sql)
+        settings = [sql for sql, _ in self.calls]
+        self.assertLess(settings.index("SET LOCAL statement_timeout = '1000ms'"), settings.index(query))
+        self.assertNotRegex(query, r'auth_role_assignments|role_permissions|ORDER BY')
+
+    def test_scope_discovery_accepts_eligible_session_with_no_search_grants(self):
+        self.resolve.return_value = Principal(str(self.actor), frozenset({'fixture-tenant'}), (),
+                                              (('fixture-tenant', 'admin'),))
+        self.receipt = {'version': 1, 'status': 'complete', 'scopes': []}
+        client = self.start()
+        reply = client.get('/v1/knowledge/search/scopes', headers=self.headers)
+        self.assertEqual((reply.status_code, reply.json()), (200, self.receipt))
+        self.assertEqual(reply.headers['Cache-Control'], 'private, no-store')
+        args = next(a for sql, a in self.calls if 'bri.unified_knowledge_search_scopes' in sql)
+        self.assertEqual(args, ('fixture-tenant', self.actor, UUID(USER_ID), UUID(SESSION_ID), ISSUER))
+        self.assertEqual(client.post('/v1/knowledge/search', headers=self.headers,
+                                     json={'scope_node_id': self.node, 'query': 'x'}).status_code, 403)
+
+    def test_scope_discovery_wire_cap_and_fail_closed_receipts(self):
+        from fastapi.responses import JSONResponse
+
+        client = self.start()
+        path = '/v1/knowledge/search/scopes'
+        receipt = {'version': 1, 'status': 'complete', 'scopes': [
+            {'scope_node_id': self.node, 'display_label': ''}]}
+        padding = 131072 - len(JSONResponse(receipt).body)
+        receipt['scopes'][0]['display_label'] = 'é' * (padding // 2) + 'x' * (padding % 2)
+        self.receipt = receipt
+        reply = client.get(path, headers=self.headers)
+        self.assertEqual((reply.status_code, len(reply.content)), (200, 131072))
+        receipt['scopes'][0]['display_label'] += 'x'
+        for invalid in (receipt, {'version': 2, 'status': 'complete', 'scopes': []},
+                        {'version': 1, 'status': 'complete', 'scopes': [{'scope_node_id': 'team'}]},
+                        psycopg.errors.QueryCanceled('private deadline'),
+                        psycopg.errors.InsufficientPrivilege('private dependency privilege')):
+            self.receipt = invalid
+            reply = client.get(path, headers=self.headers)
+            self.assertEqual((reply.status_code, reply.json()), (503, {'version': 1, 'status': 'unavailable'}))
+            self.assertEqual(reply.headers['Cache-Control'], 'private, no-store')
+
+    def test_scope_discovery_is_not_registered_in_ordinary_profiles(self):
+        from bri.api.app import ApiSettings, create_app
+
+        path = '/v1/knowledge/search/scopes'
+        for env, auth in (('', 'disabled'), ('development', 'disabled'), ('production', 'disabled'),
+                          ('hosted-development', 'supabase')):
+            with self.subTest(env=env):
+                app = create_app(settings=ApiSettings(environment=env, auth_mode=auth), token_verifier=object())
+                self.assertFalse(any(getattr(route, 'path', None) == path for route in app.routes))
+                with TestClient(app) as client:
+                    self.assertIn(client.get(path).status_code, (404, 405))
+
+    def test_scope_discovery_rejects_browser_authority_before_authentication(self):
+        client = self.start()
+        path = '/v1/knowledge/search/scopes'
+        for method, target, extra, body in (
+            ('POST', path, {}, b''), ('GET', path + '/', {}, b''),
+            ('GET', path.replace('scopes', '%73copes'), {}, b''), ('GET', path + '?tenant=x', {}, b''),
+            ('GET', path, {'X-Tenant-Id': 'foreign'}, b''), ('GET', path, {'permission': 'knowledge:read'}, b''),
+            ('GET', path, {}, b'x'),
+        ):
+            reply = client.request(method, target, headers=self.headers | extra, content=body)
+            self.assertIn(reply.status_code, (400, 404, 413))
+        self.assertFalse(self.auth_calls)
+        self.assertFalse(self.calls)
 
     def test_signed_search_passes_server_authority_and_normalized_query_under_limits(self):
         result = self.start().post('/v1/knowledge/search', headers=self.headers,
@@ -276,6 +354,7 @@ class UnifiedKnowledgeLoopbackTests(TestCase):
 
     sock: Path
     tenant: str
+    foreign: str
     actors: list[tuple[UUID, UUID, UUID]]
 
     @classmethod
@@ -294,6 +373,139 @@ class UnifiedKnowledgeLoopbackTests(TestCase):
     intake = _pg.intake
     submit = _pg.submit
     worker = _pg.worker
+
+    def test_scope_discovery_signed_loopback_authority_and_wire_limit(self):
+        from fastapi.responses import JSONResponse
+        from bri.api.unified_knowledge import create_staged_unified_knowledge_app
+        from test_csv_intake_api import StagedCsvPostgres
+        from test_unified_knowledge_postgres import ROLE
+
+        _, sub, sid = self.actors[2]
+        verified = True
+
+        def provider(request):
+            return auth_server_response(request, user_id=str(sub), factors=[{
+                'factor_type': 'totp', 'status': 'verified' if verified else 'unverified'}])
+
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.org_nodes SET display_name='' WHERE (tenant_id,node_id)=(%s,'team')", (self.tenant,))
+        app = create_staged_unified_knowledge_app(identity_scope=lambda: self.connect('bri_app'),
+            reader_scope=lambda: self.connect(ROLE), private_socket=self.sock, auth_transport=httpx.MockTransport(provider))
+        client = self.enterContext(StagedCsvPostgres().loopback_reader(app))
+
+        def discover():
+            return client.get('/v1/knowledge/search/scopes', headers={'Authorization':
+                f'Bearer {make_token(sub=str(sub), session_id=str(sid))}'})
+
+        initial = discover()
+        self.assertEqual(initial.json(), {'version': 1, 'status': 'complete', 'scopes': [
+            {'scope_node_id': 'team', 'display_label': ''}]})
+        padding = 131072 - len(JSONResponse(initial.json()).body)
+        exact_label = 'é' * (padding // 2) + 'x' * (padding % 2)
+        for label, status in ((exact_label, 200), (exact_label + 'x', 503)):
+            with self.connect('postgres') as db:
+                db.execute("UPDATE bri.org_nodes SET display_name=%s WHERE (tenant_id,node_id)=(%s,'team')",
+                           (label, self.tenant))
+            reply = discover()
+            self.assertEqual(reply.status_code, status)
+            if status == 200:
+                self.assertEqual(len(reply.content), 131072)
+            else:
+                self.assertEqual(reply.json(), {'version': 1, 'status': 'unavailable'})
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.org_nodes SET display_name='Team' WHERE (tenant_id,node_id)=(%s,'team')", (self.tenant,))
+        self.assertEqual(discover().status_code, 200)
+        verified = False
+        self.assertEqual(discover().status_code, 401)
+        verified = True
+        self.assertEqual(discover().status_code, 200)
+        with self.connect('postgres') as db:
+            db.execute('UPDATE bri.auth_sessions SET revoked_at=clock_timestamp() WHERE session_id=%s', (sid,))
+        self.assertEqual(discover().status_code, 403)
+        with self.connect('postgres') as db:
+            sid = uuid4()
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', (*self.actors[2][:2], sid))
+        self.assertEqual(discover().status_code, 200)
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_identity_links SET status='suspended' WHERE auth_user_id=%s", (sub,))
+        self.assertEqual(discover().status_code, 403)
+
+    def test_bounded_discovery_eligibility_and_no_transfer_of_authority(self):
+        from bri.api.unified_knowledge import create_staged_unified_knowledge_app
+        from test_csv_intake_api import StagedCsvPostgres
+        from test_unified_knowledge_postgres import ROLE, SCOPES
+
+        record, _ = self.publish_csv()
+        actor, sub, sid = self.actors[2]
+        _, platform_sub, platform_sid = self.actors[3]
+        transport = httpx.MockTransport(lambda request: auth_server_response(request, user_id=str(
+            platform_sub if request.headers.get('authorization') == platform_auth['Authorization'] else sub)))
+
+        def auth(user=sub, session=sid, **claims):
+            return {'Authorization': 'Bearer ' + make_token(sub=str(user), session_id=str(session), **claims)}
+
+        platform_auth = auth(platform_sub, platform_sid)
+        app = create_staged_unified_knowledge_app(identity_scope=lambda: self.connect('bri_app'),
+            reader_scope=lambda: self.connect(ROLE), private_socket=self.sock, auth_transport=transport)
+        client = self.enterContext(StagedCsvPostgres().loopback_reader(app))
+        path = '/v1/knowledge/search/scopes'
+        original = auth()
+        discovery = client.get(path, headers=original)
+        self.assertEqual(discovery.json(), {'version': 1, 'status': 'complete', 'scopes': [
+            {'scope_node_id': 'team', 'display_label': 'Team'}]})
+        for headers, expected in (({}, 401), ({'Authorization': 'Bearer malformed.token.signature'}, 401),
+                (auth(exp=1), 401), (auth(iss='https://invalid.example/auth/v1'), 401),
+                (auth(session=uuid4()), 403), (platform_auth, 403), (original | {'Tenant-Id': self.foreign}, 400)):
+            reply = client.get(path, headers=headers)
+            self.assertEqual(reply.status_code, expected)
+            self.assertEqual(set(reply.json()), {'detail'})
+            self.assertEqual(reply.headers['Cache-Control'], 'private, no-store')
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_identity_links SET auth_issuer='https://invalid.example/auth/v1',"
+                       "provider_issuer='https://invalid.example/auth/v1' WHERE auth_user_id=%s", (sub,))
+        self.assertEqual(client.get(path, headers=original).status_code, 403)
+        with self.connect('postgres') as db:
+            db.execute('UPDATE bri.auth_identity_links SET auth_issuer=%s,provider_issuer=%s WHERE auth_user_id=%s',
+                       (ISSUER, ISSUER, sub))
+            db.execute("UPDATE bri.auth_tenant_memberships SET status='suspended' WHERE (tenant_id,principal_id)=(%s,%s)",
+                       (self.tenant, actor))
+        self.assertEqual(client.get(path, headers=original).status_code, 403)
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_tenant_memberships SET status='active' WHERE (tenant_id,principal_id)=(%s,%s)",
+                       (self.tenant, actor))
+            expired = uuid4()
+            db.execute("INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at,expires_at) "
+                       "VALUES (%s,%s,%s,clock_timestamp()-interval '9 hours',clock_timestamp()+interval '1 hour')",
+                       (actor, sub, expired))
+            sid = uuid4()
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', (actor, sub, sid))
+        self.assertEqual(client.get(path, headers=auth(session=expired)).status_code, 403)
+        current = auth(session=sid)
+        self.assertEqual(client.get(path, headers=current).json(), discovery.json())
+        evidence = f'/v1/knowledge/csv/{record}/versions/{record}/evidence'
+        self.assertEqual(client.get(evidence, headers=current).status_code, 200)
+        with self.connect('postgres') as db:
+            db.execute(f'REVOKE EXECUTE ON FUNCTION {SCOPES} FROM {ROLE}')
+        try:
+            unavailable = client.get(path, headers=current)
+            self.assertEqual((unavailable.status_code, unavailable.json()),
+                             (503, {'version': 1, 'status': 'unavailable'}))
+        finally:
+            with self.connect('postgres') as db:
+                db.execute(f'GRANT EXECUTE ON FUNCTION {SCOPES} TO {ROLE}')
+        with self.connect('postgres') as db:
+            db.execute("UPDATE bri.auth_role_assignments SET status='revoked' WHERE "
+                       "(tenant_id,principal_id,role_id,scope_node_id)=(%s,%s,'csv','team')", (self.tenant, actor))
+            next_sid = uuid4()
+            db.execute('INSERT INTO bri.auth_sessions(principal_id,auth_user_id,session_id,started_at) '
+                       'VALUES (%s,%s,%s,clock_timestamp())', (actor, sub, next_sid))
+        fresh = auth(session=next_sid)
+        self.assertEqual(client.get(path, headers=fresh).json(), {'version': 1, 'status': 'complete', 'scopes': []})
+        self.assertEqual(client.post('/v1/knowledge/search', headers=fresh,
+                                    json={'scope_node_id': 'team', 'query': 'head'}).status_code, 403)
+        self.assertEqual(client.get(evidence, headers=fresh).status_code, 404)
 
     def test_actual_sql_to_http_wire_cap_and_overflow(self):
         from fastapi.responses import JSONResponse

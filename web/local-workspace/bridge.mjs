@@ -6,6 +6,7 @@ import { reviewTarget, forwardReview } from './review-bridge.mjs';
 import { intakeTarget, forwardIntake, governanceTarget, forwardGovernance } from './xlsx-bridge.mjs';
 import { isXlsxPagePath } from './xlsx-governance.mjs';
 import { parseReport, reportMaxBytes, reportPath, reportScope, reportTarget } from './reporting.mjs';
+import { unifiedTarget, forwardUnified } from './unified-bridge.mjs';
 
 export const LOCAL_HOST = '127.0.0.2';
 export const LOCAL_PORT = 3013;
@@ -144,6 +145,12 @@ export function composeLocalWorkspace(nextHandler) {
     const query = separator === -1 ? undefined : target.slice(separator + 1);
     if (path !== PREFIX && !path.startsWith(`${PREFIX}/`)) {
       // Only the separate Next UI and its assets are dispatched to Next. No release routes, even by alias.
+      if (path === '/knowledge/search') {
+        if (query !== undefined) return deny(res, 404);
+        if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
+        res.setHeader('cache-control', 'no-store');
+        return nextHandler(req, res);
+      }
       if (path === '/reports') {
         if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
         res.setHeader('cache-control', 'no-store');
@@ -159,6 +166,11 @@ export function composeLocalWorkspace(nextHandler) {
       }
       return deny(res, 404);
     }
+    const unified = unifiedTarget(path.slice(PREFIX.length), req.method, query);
+    if (typeof unified === 'number') return deny(res, unified);
+    if (unified) return forwardUnified(req, res, unified, {
+      browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest, deny,
+    });
     const xlsxIntake = intakeTarget(path.slice(PREFIX.length), req.method, query);
     if (typeof xlsxIntake === 'number') return deny(res, xlsxIntake);
     if (xlsxIntake) return forwardIntake(req, res, xlsxIntake, {

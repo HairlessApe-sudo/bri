@@ -3,6 +3,17 @@
 Last updated: 2026-11-27
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A18.2-AM5 — integrated acceptance for local synthetic scope only
+
+- Independent `deleg_6d22c9e9` accepted exact integrated tree `96b09581752efd357d41493fe46d0a731ae7f59d` and closed both `deleg_8557878b` blockers: immediate pending identity redaction and consistent versioned 503 responses. The [Knowledge Interface closeout](../architecture/a18-2-knowledge-interface.md#am5-integrated-acceptance) records the fixes, frozen evidence and limitations.
+- Full frontend regression: 199 passed, zero failures or skips. Both TypeScript checks, optimized build, isolated release smoke, signed backend compatibility and the complete 24-condition signed Chromium matrix plus amendment checks passed. The accepted backend is unchanged; its 769-pass suite was reused.
+- Real data, hosted and production execution remain prohibited. A15, A18.1 and A18.2 retain separate gates; the A20 active-only access-path assessment is deferred and PostgreSQL 16.16 CSV reservation compatibility remains unresolved. A17 is deferred; A18.3 requires separate authorization.
+
+## A18.2-AM4 — prerequisite accepted for local synthetic scope only
+
+- Renewed independent review `deleg_35954be0` accepted exact backend tree `6a9aa982084f36a1294e0b7891e9a5437dd957fa` under the [scope-discovery decision](../architecture/a18-scope-discovery-local-risk.md). The original findings and the separate production prohibition remain in force. Integrated frontend acceptance is a separate gate.
+- The scope-discovery production prohibition and active-only access-path assessment are mandatory A20 deployment-readiness work. No production design has been approved. Integrated A18.2 acceptance and separate authorization are prerequisites for A18.3.
+
 ## A18.1-AM5-R1 — accepted for local synthetic scope only
 
 - Unified search v1 returns typed CSV and XLSX hit provenance and exact-version links. The distinct local XLSX v2 route exposes existing protected receipt metadata without altering v1 or the accepted A16 parser. No route in this change is enabled in release or hosted profiles.
