@@ -3,6 +3,12 @@
 Last updated: 2026-11-27
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A18.3-R2 — integrated demonstration accepted for local synthetic scope only
+
+- Independent review `deleg_dc454c2b` accepted exact demonstration tree `ece9ebb02cc03dff2791a4ef84ccf709dfaf95d3`. A18.2 remains delivered at `239da41a6cfdbf4199dc35763bd52c1cc47619a9`; A18.3 changes no application runtime, migration, permissions, or dependencies.
+- The signed Chromium product journey and 41 focused tests passed in direct reruns, alongside signed compatibility and the optimized loopback release smoke test. The original 13 screenshots, manifests, and commands are preserved. See the [integrated closeout](../architecture/a18-3-integrated-acceptance.md) and [original MVP reconciliation](../architecture/a18-3-mvp-reconciliation.md).
+- A19 needs separate authorization and a bounded governance and data-lifecycle brief. A17 remains deferred, and the separate A15/A18.1/A18.2 production gates and A20 access-path assessment remain open. A18.3 does not authorize delivery, deployment, hosted use, or real data.
+
 ## A18.2-AM5 — integrated acceptance for local synthetic scope only
 
 - Independent `deleg_6d22c9e9` accepted exact integrated tree `96b09581752efd357d41493fe46d0a731ae7f59d` and closed both `deleg_8557878b` blockers: immediate pending identity redaction and consistent versioned 503 responses. The [Knowledge Interface closeout](../architecture/a18-2-knowledge-interface.md#am5-integrated-acceptance) records the fixes, frozen evidence and limitations.

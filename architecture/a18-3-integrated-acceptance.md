@@ -1,0 +1,21 @@
+# A18.3 integrated acceptance evidence
+
+Scope: disposable local synthetic demonstration and original MVP reconciliation only. No runtime, migrations, policy, release configuration or package changes. A18.2 was fast-forwarded from `d6bb0f47dc0bd3627f0aaa55f7b46c9fdd735270` to `239da41a6cfdbf4199dc35763bd52c1cc47619a9`; a fresh remote main query confirmed correspondence with a clean local worktree. The only differences from reviewed A18.2 tree `96b09581752efd357d41493fe46d0a731ae7f59d` were the two reviewed closeout document paths. No A18.3 push or deployment is authorized.
+
+## Demonstration and capability boundary
+
+[Alder Reach demonstration guide and screenshot descriptions](../scripts/a18_3-demo.md) covers the fictional public-service agency, three operating departments, restricted and authorized-empty scopes, and the isolated second tenant. [MVP reconciliation](a18-3-mvp-reconciliation.md) records UI versus fixture-only operations, original packages 0–7, and proposed remaining milestones. Files in `scripts/a18_3_fixture.py` and `scripts/a18_3_demo.py` are disposable orchestration, not product runtime. CSV approval and the existing access overlay are not XLSX publication and principal-targeted maintenance. The employee questions and inventory remain CSV-only. Unified search remains literal and exact-scope. An evidence link confers no authority; fresh denial does not recall already delivered information.
+
+## Qualification inputs and artifacts
+
+The accepted 769 backend tests, 199 frontend tests, 36 migration checksums, no-op replay and 70 forced-RLS non-ledger tables are carried forward by implementation correspondence, not counted as new test runs. Current signed compatibility and loopback optimized-release smoke checks are separate. The optimized output has no dedicated Knowledge Interface or local unified bridge; `/knowledge/search` can still match the existing generic release record route. No hosted application was contacted or qualified.
+
+Local evidence root: `/home/black/.hermes/evidence/BRI/A18.3/`. See the exact candidate/verification manifest, signed compatibility and release smoke command/exit/log triplets, fixture probe and focused regression logs, Chromium command/exit/log, and `screenshot-manifest.tsv` for exact paths, hashes and sizes. Screenshot batches are private external files, not Git artifacts. The actual run uses PG 16.2, Python 3.14.9/psycopg 3.3.9, Node 26.12.1, Chrome for Testing 156.0.8078.80 (cached distribution 1248) and Next 16.4.6. The separate cached Docker 16.16 engine was used only for earlier accepted fixtures and is not qualified for the unresolved CSV reservation assertion.
+
+## Independent closeout
+
+`deleg_dc454c2b` returned **ACCEPT LOCAL SYNTHETIC SCOPE ONLY** for exact demonstration tree `ece9ebb02cc03dff2791a4ef84ccf709dfaf95d3`. The verdict is preserved in `independent-review.log`. The original background jobs reported 1 after their child commands recorded 0; the original failing wrapper stage could not be established. Only the affected signed Chromium and 41 focused checks were rerun directly; both returned 0 and Chromium confirmed fixture cleanup. The original screenshots were retained and exported after decode, visual inspection, and checksum verification. The review ZIP and the separate MVP reconciliation copy are in `C:\Users\black\Documents\BRS\BRI-Review\A18.3\`. Those copies inherit local Windows access permissions; they are not owner-only like the Linux originals.
+
+## Remaining gates
+
+A15, A18.1 and A18.2 production gates remain independent. Local acceptance does not establish timing noninterference, production scale, hosted identity readiness or customer release. A20 still requires the deferred scope-discovery active-only access-path assessment, approved risk treatment and independent verification of an actual representative deployment. Worker isolation, maintained PostgreSQL qualification, retention and deletion propagation, backup and recovery, and deployment operations remain open as described in the reconciliation. A17 PDF remains deferred; no A19, A20 or A21 implementation is approved. A19 requires separate architecture authorization, review of outstanding governance and data-lifecycle requirements, and a bounded brief that does not treat this demonstration as production clearance.
