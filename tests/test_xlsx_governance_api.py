@@ -228,6 +228,30 @@ class GovernanceTests(TestCase):
             response = client.get(path, headers=self.headers)
             self.assertEqual((response.status_code, response.json()), (404, {'detail': 'XLSX record not found'}))
 
+    def test_published_evidence_v2_reuses_v1_rpc_without_changing_v1_body(self):
+        record = uuid4()
+        base = {'record_id': str(record), 'source_version_id': str(self.job), 'node_id': 'fixture-node'}
+        meta = {'original_sha256': 'a' * 64, 'canonical_sha256': 'b' * 64,
+                'extractor_version': 1, 'canonicalization_version': 1}
+        self.evidence_row = dict(base, **meta, sheet_id='1', sheet_title='Sample', cell_range='A1',
+                                 rows=[[['text', 'Header']]], artifact_key='private-marker')
+        self.grant = 'knowledge:read'
+        client = self.start(reader=True)
+        path = f'/knowledge/xlsx/{record}/evidence/{self.job}'
+        v1 = client.get('/v1' + path, headers=self.headers)
+        commands = self.events.copy()
+        self.events.clear()
+        v2 = client.get('/v2' + path, headers=self.headers)
+        self.assertEqual((v1.status_code, v2.status_code), (200, 200), v2.text)
+        self.assertEqual(self.events, commands)
+        self.assertEqual(v1.json(), dict(base, sheet_id='1', sheet_title='Sample', cell_range='A1',
+                                         cells=[{'row': 1, 'column': 1, 'value': ['text', 'Header']}], next_cursor=None))
+        self.assertEqual(v2.json(), v1.json() | meta | {'version': 2, 'source_id': str(self.job)})
+        self.assertEqual(v2.headers['cache-control'], 'private, no-store')
+        self.evidence_row = None
+        denied = client.get('/v2' + path, headers=self.headers)
+        self.assertEqual((denied.status_code, denied.json()), (404, {'detail': 'XLSX record not found'}))
+
     def test_unapproved_routes_and_inputs_fail_before_authentication(self):
         client = self.start()
         for method, path, headers, status in (
@@ -264,6 +288,7 @@ class GovernanceTests(TestCase):
             self.assertEqual(client.post(f'/v1/knowledge/proposals/xlsx/xlsx:{item}/decision').status_code, 404)
             # The existing generic release knowledge ID route must not be used for XLSX.
             self.assertEqual(client.get(f'/v1/knowledge/xlsx/{item}').status_code, 404)
+            self.assertEqual(client.get(f'/v2/knowledge/xlsx/{item}/evidence/{item}').status_code, 404)
 
 
 @skipUnless(os.getenv('BRI_TEST_PG_BIN'), 'requires private PostgreSQL 16')

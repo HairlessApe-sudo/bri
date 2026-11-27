@@ -1,13 +1,31 @@
 # BRI Project Progress
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 Stage: 3 — platform foundation MVP, synthetic development implementation
+
+## A18.1-AM5-R1 — accepted for local synthetic scope only
+
+- Unified search v1 returns typed CSV and XLSX hit provenance and exact-version links. The distinct local XLSX v2 route exposes existing protected receipt metadata without altering v1 or the accepted A16 parser. No route in this change is enabled in release or hosted profiles.
+- Exact implementation tree `8c5a0edf070c601edd7313affdb838a55b58c9c8`: 759 backend tests and 38 focused tests passed, signed loopback and offline route checks passed, and all 35 checksums, no-op replay, 70 forced-RLS tables and restricted execution checks passed. Independent `deleg_64fa86ac` returned **ACCEPT LOCAL SYNTHETIC SCOPE ONLY** and closed the AM4 implementation blockers. See the [contract and decision](../architecture/a18-backend-local-risk.md#am5-r1-verification-and-independent-decision).
+- No production clearance: the PostgreSQL 16.16 CSV test discrepancy, independent production assessment and actual deployment verification remain open. A17 stays deferred; A18.2 and A18.3 remain unauthorized.
+
+## A18.1-AM5 — stopped at A16 evidence compatibility gate
+
+- The accepted local A16 client rejects additional fields in the existing exact-version XLSX evidence JSON body. A direct test of its production parser confirmed that even one proposed digest or processing version breaks it. A versioned evidence interface decision is required; search/evidence runtime and frontend code were not changed.
+- Recovered the known local PostgreSQL 16.2 toolchain. The baseline CSV lineage-reservation test passed on both the committed baseline and the preserved AM4 reviewed tree; it still failed on both with 16.16 (`42501` before expected `23505`). Catalog checks matched across the two environments for the relevant roles, session mode, migrations and policies. No test, governance or RLS change is authorized or required to reproduce either result. A full suite on a corrected candidate, signed HTTP and renewed review remain pending. See the [AM5 findings](../architecture/a18-backend-local-risk.md#am5--versioned-xlsx-evidence-decision-required).
+
+## A18.1-AM4 — backend candidate on HOLD
+
+- [A18.1 backend contract and AM4 risk decision](../architecture/a18-backend-local-risk.md): conditional acceptance of documented physical workload/timing/availability inference for local synthetic development only. The AM3 keys-only projection is deferred. Separate production prohibition remains binding; A15's gate is independent.
+- Candidate tree `d61ae29f9b40781e096bbf6a769e7cde322d95d6`: full disposable backend verifier exited 1 (753 run, 752 passed, zero test failures, one error, zero skips). All 35 migration checksums matched, replay applied zero, and 70 non-ledger tables had forced RLS. The sole full-suite error also occurs on the committed baseline with PostgreSQL 16.16: the existing CSV lineage-reservation test expected SQLSTATE 23505, but the RLS policy rejects first with 42501. No earlier governance or test assertion was weakened.
+- Focused verification passed all 23 A18 tests; the signed loopback demonstration, explicit excerpt clipping check and release route-absence check passed. Raw commands and receipts: `/home/black/.hermes/evidence/BRI/A18.1-AM4/`. Independent review `deleg_e97b5dd9` returned **HOLD** on this exact tree. The original typed search-hit evidence contract is incomplete, the clean full-suite gate remains unmet, and required coverage is missing for exact-cap response acceptance, live inactive/unverified identity, and fresh evidence denial after node/session revocation on both endpoints. No implementation commit or push.
+- A18.2 requires a verified and independently accepted exact backend contract and separate architectural authorization. A18.2 and A18.3 are not started.
 
 ## A17 interim closeout and A18 preparation
 
 - [A17 remains on HOLD](../architecture/a17-interim-closeout.md). AM3 is partial evidence only; independent review retained HOLD. Governed selectable-text PDF is temporarily deferred, not removed from original MVP package 3. No resource limits, parser dependencies or production gates changed.
 - Carry dedicated ingestion-worker qualification into deployment and operational readiness (package 6). No host or cgroup changes are authorized.
-- [A18 unified CSV/XLSX search](../architecture/a18-unified-retrieval-proposal.md) is a proposal awaiting approval, not a delivered feature. A13 and A15 v1 remain CSV-only; all prior MVP carry-forwards remain open.
+- The historical [A18 unified CSV/XLSX search proposal](../architecture/a18-unified-retrieval-proposal.md) is not a delivered feature; see AM4 status above. A13 and A15 v1 remain CSV-only; prior MVP carry-forwards remain open.
 
 ## A16.4 — Integrated XLSX acceptance
 

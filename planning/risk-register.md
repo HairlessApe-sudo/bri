@@ -29,6 +29,12 @@ Unresolved; conditional local synthetic-only risk acceptance requires renewed in
 
 Real customer data and hosted production execution are blocked pending the separate production security assessment and approved risk treatment specified in [the reporting architecture](../architecture/published-knowledge-inventory.md#residual-availability-risk-a15-am2).
 
+## A18.1-AM4 — separate residual workload, timing and availability gate
+
+The architecture owner conditionally accepts the documented physical workload, timing and availability-inference risk for local synthetic-data development only. This is not implementation acceptance. AM2 measured a 3.901 to 18.102 ms sibling-node median increase; it did not observe a complete-to-unavailable transition or establish timing noninterference. Unilateral grant-population dependence is a structural finding, not a measured timing series. No severity or likelihood is assigned. Real customer data, hosted and production use are prohibited pending the separate [A18 production security gate](../architecture/a18-backend-local-risk.md#production-prohibition). A15's separate gate is unchanged.
+
+AM5-R1 closed the implementation HOLD for local synthetic use only after preserving XLSX evidence v1, verifying the separately authorized local v2 and passing the full verifier and independent review. The PostgreSQL 16.16 CSV reservation discrepancy remains open: both the committed baseline and AM4 tree reject with RLS SQLSTATE `42501` instead of the expected `23505`; the unchanged test passes on native PostgreSQL 16.2. Before deployment, independently qualify a maintained PostgreSQL release and resolve this discrepancy without weakening CSV enforcement. No production PostgreSQL version is selected. The separate timing/availability and A15 production gates are unchanged.
+
 ## Dedicated ingestion worker qualification — open
 
 [A17 interim closeout](../architecture/a17-interim-closeout.md) records AM3 as partial evidence only and retains the independent HOLD. Track supervisor-controlled containment and deployment-profile portability under deployment and operational readiness. Do not treat local process limits as group limits, or containment as exact PDF decoded-work accounting. No existing gate or risk rating is changed.

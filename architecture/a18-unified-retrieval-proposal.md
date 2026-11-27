@@ -1,6 +1,6 @@
 # A18-PREP — Unified governed knowledge search (proposal only)
 
-No implementation, schema, privileges or deployment are approved. Start from `0030`, `0032`, `0033`, `0034`, `src/bri/knowledge/csv_questions.py`, `src/bri/api/xlsx_governance.py`, and the isolated local knowledge workspace.
+Status: The preparation options below are historical. The A18.1 backend candidate and AM4 conditional local risk decision are tracked in [A18 backend and local risk](a18-backend-local-risk.md). A18.2, A18.3 and production use are not authorized.
 
 ## Current boundaries
 

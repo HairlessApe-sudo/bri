@@ -28,6 +28,7 @@ from bri.ingestion.xlsx_strict import _BAD_TITLE, _SHEET_ID, _valid_rows
 
 REVIEW_PREFIX = '/v1/knowledge/proposals/xlsx'
 PUBLISHED_PREFIX = '/v1/knowledge/xlsx'
+PUBLISHED_V2_PREFIX = '/v2/knowledge/xlsx'
 _REVIEWER = 'bri_xlsx_reviewer'
 _READER = 'bri_xlsx_reader'
 _QUEUE = 'SELECT bri.xlsx_review_queue(%s,%s,%s,%s,%s,%s,%s)'
@@ -41,6 +42,7 @@ _RAW_PREFIX = REVIEW_PREFIX.encode('ascii')
 _UUID = rb'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 _ITEM = re.compile(_RAW_PREFIX + rb'/xlsx:(' + _UUID + rb')(/decision)?')
 _RECORD = re.compile(PUBLISHED_PREFIX.encode('ascii') + rb'/(' + _UUID + rb')(?:/evidence/(' + _UUID + rb'))?')
+_RECORD_V2 = re.compile(PUBLISHED_V2_PREFIX.encode('ascii') + rb'/(' + _UUID + rb')/evidence/(' + _UUID + rb')')
 _NIL = b'00000000-0000-0000-0000-000000000000'
 _RECORD_NOT_FOUND = 'XLSX record not found'
 _INVALID = 'Invalid XLSX governance request'
@@ -60,7 +62,7 @@ def _guard(request: Request, *, reader: bool) -> dict[bytes, bytes]:
     if not raw.isascii() or raw.decode('ascii') != request.scope['path']:
         raise HTTPException(404, 'Not Found')
     item = _ITEM.fullmatch(raw)
-    record = _RECORD.fullmatch(raw) if reader else None
+    record = (_RECORD.fullmatch(raw) or _RECORD_V2.fullmatch(raw)) if reader else None
     if raw == _RAW_PREFIX and request.method == 'GET':
         allowed = {b'limit', b'cursor'}
     elif item and item[1] != _NIL and request.method == ('POST' if item[2] else 'GET'):
@@ -184,7 +186,8 @@ def create_staged_xlsx_governance_app(
         except HTTPException as exc:
             response = JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
         except psycopg.errors.InsufficientPrivilege:
-            detail = _RECORD_NOT_FOUND if request.scope['path'].startswith(PUBLISHED_PREFIX + '/') else _NOT_FOUND
+            detail = (_RECORD_NOT_FOUND if request.scope['path'].startswith(
+                (PUBLISHED_PREFIX + '/', PUBLISHED_V2_PREFIX + '/')) else _NOT_FOUND)
             response = JSONResponse({'detail': detail}, status_code=404)
         except (psycopg.errors.UniqueViolation, psycopg.errors.ObjectNotInPrerequisiteState):
             response = JSONResponse({'detail': 'XLSX governance conflict'}, status_code=409)
@@ -272,13 +275,19 @@ def create_staged_xlsx_governance_app(
         return _bounded({'id': item_id, 'decision': decision})
 
     if reader_db is not None:
-        async def published(request: Request, record_id: str, version_id: str | None = None):
+        async def read_published(request: Request, record_id: str, version_id: str | None, *, contract=1):
             await _upload_body(request, 0)
-            authority = await authorize(request, 'knowledge:read')
+            try:
+                authority = await authorize(request, 'knowledge:read')
+            except HTTPException as exc:
+                if contract == 2 and exc.status_code == 403:
+                    raise HTTPException(404, _RECORD_NOT_FOUND) from None
+                raise
             record = UUID(record_id)
             version = UUID(version_id) if version_id is not None else None
             args = _authority_args(authority)
-            scope = (*args, 'published-evidence', record, version)
+            cursor_kind = 'published-evidence' if contract == 1 else 'published-evidence-v2'
+            scope = (*args, cursor_kind, record, version)
             position = cursors.read(request.state.xlsx_params, scope) or 0
             query, tail = (_EVIDENCE, (record, version)) if version is not None else (_PUBLISHED, (record,))
             row = await run_in_threadpool(_command, reader_db, _READER, query, (*args, *tail),
@@ -291,12 +300,33 @@ def create_staged_xlsx_governance_app(
             if (_identifier(data['record_id']) != record or (version is not None and actual_version != version)
                     or not isinstance(node, str) or not _NODE.fullmatch(node)):
                 raise DatabaseUnavailable('Invalid XLSX published receipt')
-            result = {'record_id': str(record), 'source_version_id': str(actual_version), 'node_id': node}
+            result: dict[str, str | int] = {'record_id': str(record), 'source_version_id': str(actual_version), 'node_id': node}
             if version is None:
                 return _bounded(result)
+            if contract == 2:
+                # 0033 enforces the source FK on (tenant_id, job_id): the
+                # verified version's job UUID is also the documented source key.
+                result.update(version=2, source_id=str(actual_version))
+                for key in ('original_sha256', 'canonical_sha256'):
+                    value = data[key]
+                    if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value):
+                        raise DatabaseUnavailable('Invalid XLSX evidence digest')
+                    result[key] = value
+                for key in ('extractor_version', 'canonicalization_version'):
+                    value = data[key]
+                    if type(value) is not int or value != 1:
+                        raise DatabaseUnavailable('Invalid XLSX evidence processing version')
+                    result[key] = value
             return _page(data, position, scope, cursors, result)
+
+        async def published(request: Request, record_id: str, version_id: str | None = None):
+            return await read_published(request, record_id, version_id)
+
+        async def published_v2(request: Request, record_id: str, version_id: str):
+            return await read_published(request, record_id, version_id, contract=2)
 
         app.get(PUBLISHED_PREFIX + '/{record_id}')(published)
         app.get(PUBLISHED_PREFIX + '/{record_id}/evidence/{version_id}')(published)
+        app.get(PUBLISHED_V2_PREFIX + '/{record_id}/evidence/{version_id}')(published_v2)
 
     return app
