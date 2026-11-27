@@ -3,6 +3,12 @@
 Last updated: 2026-11-26
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A16.4 — Integrated XLSX acceptance
+
+- A16 is accepted for the approved local synthetic-data-only governed XLSX lifecycle. This acceptance does not authorize real customer data, hosted execution or production deployment. See the [acceptance matrix and runbook](a16-acceptance.md). The A16.3 implementation was delivered to GitHub; this closeout is documentation only.
+- Original MVP carry-forward: governed selectable-text PDF intake and retention/deletion propagation (package 3); machine-identity scope closure (packages 0–2); selected deployment-profile verification and recovery/restore drills (package 6); consolidated MVP verification (package 7). Record evidence as each closes; none was delivered by A16.4.
+- The original MVP still requires permission-filtered retrieval and exact source citations for its supported use case. A generalized cross-format search/ranking/answering contract is a proposed enhancement, not accepted functionality or an automatic MVP expansion; decide separately which formats the original MVP demonstration must retrieve. A13 and A15 v1 stay CSV-only. No Generic Data Disposition or Decision Intelligence scope was reopened.
+
 ## A16.3 — Independent XLSX review, publication and evidence
 
 - Accepted for the local synthetic XLSX vertical slice only. See [architecture](../architecture/governed-xlsx-review.md) and [signed Chromium demo](../scripts/a16_3-demo.md). Validation, publication and both independent read gates remain separate; A13 and A15 v1 remain CSV-only.
