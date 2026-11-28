@@ -95,7 +95,7 @@ function validatedMetadata(value) {
 }
 /** @typedef {{category_id: string, category_label: string, classification_id: string, label: string, description: string | null}} CatalogueEntry */
 /** @param {unknown} value @param {boolean} admin @returns {(CatalogueEntry & {retired?: boolean})[]} */
-function catalogue(value, admin) {
+export function catalogue(value, admin) {
   if (!Array.isArray(value)) return invalid();
   const ids = new Set();
   const rows = value.map((entry) => {

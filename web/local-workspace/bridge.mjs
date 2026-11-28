@@ -9,6 +9,7 @@ import { parseReport, reportMaxBytes, reportPath, reportScope, reportTarget } fr
 import { unifiedTarget, forwardUnified } from './unified-bridge.mjs';
 import { metadataTarget, forwardMetadata, denyMetadata } from './metadata-bridge.mjs';
 import { reviewModeHeader } from './review-mode.mjs';
+import { administrationTarget, forwardAdministration } from './administration-bridge.mjs';
 
 export const LOCAL_HOST = '127.0.0.2';
 export const LOCAL_PORT = 3013;
@@ -73,7 +74,7 @@ function loopbackRequest(origin, path, headers, maxResponse = MAX_RESPONSE, body
       upstream.on('data', (chunk) => {
         size += chunk.length;
         if (size > maxResponse) {
-          const error = new Error('Local response exceeds limit');
+          const error = Object.assign(new Error('Local response exceeds limit'), { code: 'LOCAL_RESPONSE_LIMIT' });
           reject(error);
           outgoing.destroy(error);
         }
@@ -168,7 +169,7 @@ export function composeLocalWorkspace(handleNextRequest) {
         res.setHeader('cache-control', 'no-store');
         return nextHandler(req, res);
       }
-      if (path === '/classification') {
+      if (path === '/classification' || path === '/knowledge/administration') {
         if (query !== undefined) return denyMetadata(res, 404);
         if (req.method !== 'GET' && req.method !== 'HEAD') return denyMetadata(res, 405);
         res.setHeader('cache-control', 'private, no-store');
@@ -189,6 +190,11 @@ export function composeLocalWorkspace(handleNextRequest) {
       }
       return deny(res, 404);
     }
+    const administration = administrationTarget(path.slice(PREFIX.length), req.method, query, reviewMode === 'enabled');
+    if (typeof administration === 'number') return denyMetadata(res, administration);
+    if (administration) return forwardAdministration(req, res, administration, {
+      browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest,
+    });
     const metadata = metadataTarget(path.slice(PREFIX.length), req.method, query);
     if (typeof metadata === 'number') return denyMetadata(res, metadata);
     if (metadata) return forwardMetadata(req, res, metadata, {

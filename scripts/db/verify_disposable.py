@@ -41,7 +41,7 @@ NATIVE = {'test_security_lifecycle_postgres', 'test_provider_security_events_pos
           'test_xlsx_governance_postgres', 'test_xlsx_governance_api',
           'test_unified_knowledge_api', 'test_unified_knowledge_postgres',
           'test_classification_catalogue_postgres', 'test_knowledge_metadata_postgres',
-          'test_knowledge_metadata_api'}
+          'test_knowledge_metadata_api', 'test_knowledge_administration_postgres'}
 GOV = 'test_client_governance_pg'
 
 

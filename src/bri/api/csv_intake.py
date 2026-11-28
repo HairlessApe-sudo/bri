@@ -32,6 +32,7 @@ from bri.api.authentication import (
     SupabaseTokenVerifier,
 )
 from bri.api.database import EXPECTED_PROJECT_REF, Database, DatabaseUnavailable
+from bri.api.knowledge_administration import CSV_UPLOAD, UploadAdmission, is_administration, plausible_csv
 from bri.ingestion.csv_intake import (
     MAX_CSV_BYTES,
     ClaimedCsvJob,
@@ -348,7 +349,8 @@ _Authorize = Callable[[Request, str | None, str | None], Awaitable[_Authority]]
 
 def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, reader_only: bool = False,
                 private_guard: Callable[[Request], None] | None = None,
-                enable_metadata: bool = False, metadata_identity_only: bool = False):
+                enable_metadata: bool = False, metadata_identity_only: bool = False,
+                administration_upload: UploadAdmission | None = None):
     from bri.api.knowledge_metadata import is_metadata, metadata_boundary
 
     class IdentityDatabase(Database):
@@ -366,6 +368,8 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
 
     @app.middleware('http')
     async def private(request: Request, call_next):
+        if administration_upload and is_administration(request.scope['path']):
+            return await metadata_boundary(request, app, call_next, administration_upload=administration_upload)
         if enable_metadata and is_metadata(request):
             return await metadata_boundary(request, app, call_next)
         cid = uuid4()
@@ -431,7 +435,7 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
 def create_staged_csv_intake_app(
     *, identity_scope: Scope, intake_scope: Scope, worker_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, store: LocalCsvQuarantine, dbname: str = 'postgres', port: int = 5432,
-    reader_scope: Scope | None = None, enable_metadata: bool = False,
+    reader_scope: Scope | None = None, enable_metadata: bool = False, enable_knowledge_administration: bool = False,
 ) -> FastAPI:
     """Assemble with distinct disposable scopes and private storage.
 
@@ -440,8 +444,12 @@ def create_staged_csv_intake_app(
     The stage review queue returns the existing ``csv:<uuid>`` proposal ID;
     a review decision does not grant publication access. An optional fourth
     scope serves governed published reads only on this private listener.
+    Knowledge Administration opts into screened intake, not HTTP dispatch.
     """
     from bri.api import knowledge_metadata as metadata_api
+
+    if enable_knowledge_administration and not enable_metadata:
+        raise ValueError('Knowledge Administration requires the staged metadata mode')
 
     scopes = (identity_scope, intake_scope, worker_scope) + ((reader_scope,) if reader_scope is not None else ())
     socket = _stage_socket(private_socket, auth_transport, *scopes)
@@ -449,7 +457,9 @@ def create_staged_csv_intake_app(
     intake_db = _restricted(intake_scope, socket, dbname, port, _INTAKE)
     worker_db = _restricted(worker_scope, socket, dbname, port, _WORKER)
     reader_db = _restricted(reader_scope, socket, dbname, port, _READER) if reader_scope is not None else None
-    app, authorize = _staged_app(identity_db, auth_transport, enable_metadata=enable_metadata)
+    administration = UploadAdmission(CSV_UPLOAD) if enable_knowledge_administration else None
+    app, authorize = _staged_app(identity_db, auth_transport, enable_metadata=enable_metadata,
+                                 administration_upload=administration)
     app.state.csv_worker = _Worker(CsvIntakeProcessor(store, _WorkerRepo(worker_db)))
 
     def submit(authority, node, key, body, digest, cid, metadata=None):
@@ -490,7 +500,7 @@ def create_staged_csv_intake_app(
             raise HTTPException(422, _INVALID)
         return await run_in_threadpool(submit, authority, node, key, body, digest, request.state.csv_correlation)
 
-    async def upload_with_metadata(request: Request):
+    async def classified_upload(request: Request, *, screen: bool):
         if not _MEDIA.fullmatch(_header(request, 'content-type', status=415).strip()):
             raise HTTPException(415, _INVALID)
         node = _header(request, 'x-node-id')
@@ -505,11 +515,21 @@ def create_staged_csv_intake_app(
         body, digest = await metadata_api.upload_body(request, MAX_CSV_BYTES)
         if not body:
             raise HTTPException(422, _INVALID)
+        if screen and not plausible_csv(body):
+            raise HTTPException(415, _INVALID)
         return await run_in_threadpool(submit, authority, node, key, body, digest,
                                        request.state.metadata_correlation, metadata)
 
     if enable_metadata:
+        async def upload_with_metadata(request: Request):
+            return await classified_upload(request, screen=False)
+
         app.post(metadata_api.BASE + '/csv/uploads', status_code=202)(upload_with_metadata)
+
+    if enable_knowledge_administration:
+        @app.post(CSV_UPLOAD, status_code=202)
+        async def administration_upload(request: Request):
+            return await classified_upload(request, screen=True)
 
     @app.get(PREFIX + '/{job_id}')
     async def status(request: Request, job_id: str):

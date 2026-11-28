@@ -5,6 +5,7 @@ import { flushSync } from 'react-dom';
 import { evidencePath, normalizeQuery, parseEvidence, parseScopes, parseSearch } from '../../../unified-contract.mjs';
 import { createUnifiedLifecycle } from '../../../unified-lifecycle.mjs';
 import { WorksheetView, type Worksheet } from '../../xlsx/worksheet';
+import { EvidenceCorrection } from './evidence-correction';
 import './unified.css';
 
 const bridge = '/api/bri-local/unified';
@@ -241,6 +242,9 @@ export default function KnowledgeInterface() {
           : <><p>{physicalLines(evidence.data)} in the exact source version.</p>
             {evidence.hit.format === 'csv' && <p>Matched location: {physicalLines(evidence.hit.evidence)}.</p>}
             <p className="lede">The CSV evidence receipt verifies the recorded line span and digests. It does not return the original file.</p></>}
+        <EvidenceCorrection key={`${evidence.hit.format}:${evidence.hit.record_id}:${evidence.hit.source_version_id}`}
+          format={evidence.hit.format} record={evidence.hit.record_id} version={evidence.hit.source_version_id}
+          refresh={() => { void viewEvidence(evidence.hit); }} />
       </div>}
     </section>
   </section>;

@@ -130,12 +130,16 @@ function validCommand(value, { kind, operation }) {
     && (!replacement || (value.action === 'approve' && proposed(value.metadata, false)));
 }
 
-function single(req, name) {
+export const validAdminCatalogue = (value) => validReply(value, { kind: 'admin' });
+export const validSelectionCatalogue = (value) => validReply(value, { kind: 'selection' });
+export const validProposedMetadata = (value) => proposed(value, false);
+
+export function single(req, name) {
   const fields = req.headersDistinct[name];
   return fields?.length === 1 ? fields[0] : undefined;
 }
 
-function readExact(req, length) {
+export function readExact(req, length) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];

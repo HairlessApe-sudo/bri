@@ -21,6 +21,7 @@ from bri.api.csv_intake import (
     _APP, _NODE, Scope, _body, _command, _private_request, _restricted, _stage_socket, _staged_app,
 )
 from bri.api.database import DatabaseUnavailable
+from bri.api.knowledge_administration import UploadAdmission
 from bri.knowledge.metadata import parse_proposed_metadata
 
 BASE = '/v1/knowledge-metadata'
@@ -148,16 +149,19 @@ async def _json_body(request):
         raise HTTPException(422, _INVALID) from None
 
 
-def _guard(request, app):
+def _guard(request, app, *, administration_upload: str | None = None):
     path = request.scope['path']
     raw = request.scope.get('raw_path')
     if raw is None or not raw.isascii() or raw.decode('ascii') != path:
         raise HTTPException(404, _HIDDEN)
-    if not any(method == request.method and route.fullmatch(path) for method, route in _ROUTES):
+    if administration_upload is not None:
+        if request.method != 'POST' or path != administration_upload:
+            raise HTTPException(404, _HIDDEN)
+    elif not any(method == request.method and route.fullmatch(path) for method, route in _ROUTES):
         raise HTTPException(404, _HIDDEN)
     # An exact path in another local assembly is not served by this listener.
-    if not any(route.path.startswith(BASE + '/') and request.method in route.methods
-               and route.path_regex.fullmatch(path) for route in app.routes):
+    if not any((route.path == administration_upload if administration_upload else route.path.startswith(BASE + '/'))
+               and request.method in route.methods and route.path_regex.fullmatch(path) for route in app.routes):
         raise HTTPException(404, _HIDDEN)
     upload = path.endswith('/uploads')
     _private_request(request, app, guarded_routes=not upload, metadata_upload=upload)
@@ -196,14 +200,24 @@ def _guard(request, app):
                 raise HTTPException(413, _INVALID)
 
 
-async def metadata_boundary(request, app, call_next):
+async def metadata_boundary(request, app, call_next, *, administration_upload: UploadAdmission | None = None):
     cid = uuid4()
     request.state.metadata_correlation = cid
     try:
-        _guard(request, app)
+        _guard(request, app, administration_upload=administration_upload.path if administration_upload else None)
         if request.method == 'GET':
             await _read_body(request, 0)
-        response = await call_next(request)
+        if administration_upload is None:
+            response = await call_next(request)
+        else:
+            # Do not accumulate callers waiting for a body buffer, auth/DB
+            # connection, or quarantine thread on this staged upload path.
+            if not administration_upload.slot.acquire(blocking=False):
+                raise HTTPException(503, _UNAVAILABLE)
+            try:
+                response = await call_next(request)
+            finally:
+                administration_upload.slot.release()
     except HTTPException as exc:
         response = JSONResponse({'detail': exc.detail}, status_code=exc.status_code)
     except psycopg.errors.InsufficientPrivilege as exc:

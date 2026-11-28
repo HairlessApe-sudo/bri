@@ -3,6 +3,12 @@
 Last updated: 2026-11-28
 Stage: 3 — platform foundation MVP, synthetic development implementation
 
+## A19.2-AM2 — bounded Knowledge Administration accepted for local synthetic scope only
+
+- Independent review `deleg_70576532` accepted implementation tree `f13a0d81c44301eeafd0bd78080b75a097565827`, closing the ambiguous-upload and optimized-release evidence blockers from held tree `064b6b489733f5f81e8e4a0803bdc71d3d44f785`. Explicit recovery preserves the original command in memory and uses existing native idempotency; it never automatically retries or cancels a server job.
+- Qualified on PostgreSQL 16.2: 806 backend and 238 frontend tests, no skips, both TypeScript targets, signed Chromium ON/OFF and post-commit recovery for both formats, 40 unchanged migration checksums with no-op replay, 79 FORCE RLS application tables, and 40 optimized release route cases across both frontend prefixes. See the [AM2 closeout](../architecture/a19-2-knowledge-administration.md#am2-closeout).
+- Status is exact-job lookup only; processing remains restricted and fixture-side. Library enumeration, owner enumeration and automatic dispatch remain deferred. Library access-path qualification is an A20 backlog item distinct from the A15/A18.1/A18.2 production gates. No production, hosted, real-data, deployment, A19.3, or push authorization; A17 remains deferred.
+
 ## A19.1-AM2 — governed classification accepted for local synthetic scope only
 
 - Independent review `deleg_7aa45e11` closed both findings from held tree `408d7b20712f3b2940a1b0a60086b90dc3252b28` and accepted exact implementation tree `7dc8f99f51e1af35a43a184ab3a8b6a5a3b332d9`. The default-off local workspace again supports authorized native CSV and XLSX reviews; the protected database still rejects classified native approval without validated metadata. New correction decisions require a current revision for either action; authorized exact replay is unchanged.

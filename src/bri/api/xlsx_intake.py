@@ -22,6 +22,7 @@ from bri.api.csv_intake import (
 )
 from bri.api.database import DatabaseUnavailable
 from bri.api import knowledge_metadata as metadata_api
+from bri.api.knowledge_administration import XLSX_UPLOAD, UploadAdmission, is_administration, plausible_xlsx
 from bri.ingestion.xlsx_strict import MAX_INPUT_BYTES
 from bri.ingestion.xlsx_intake import ClaimedXlsxJob, XlsxIntakeDispatcher
 
@@ -141,13 +142,16 @@ class _WorkerRepository:
 def create_staged_xlsx_intake_app(
     *, identity_scope: Scope, submitter_scope: Scope, worker_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, store: _Quarantine, dbname: str = 'postgres', port: int = 5432,
-    enable_metadata: bool = False,
+    enable_metadata: bool = False, enable_knowledge_administration: bool = False,
 ) -> FastAPI:
     """Compose a private listener from distinct, injected disposable DB scopes.
 
     A trusted in-process caller may explicitly invoke
     ``app.state.xlsx_worker.dispatch(job_id, correlation)``.
+    Knowledge Administration opts into screened intake, not HTTP dispatch.
     """
+    if enable_knowledge_administration and not enable_metadata:
+        raise ValueError('Knowledge Administration requires the staged metadata mode')
     socket = _stage_socket(private_socket, auth_transport, identity_scope, submitter_scope, worker_scope)
     identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
     submitter_db = _restricted(submitter_scope, socket, dbname, port, _SUBMITTER)
@@ -158,9 +162,12 @@ def create_staged_xlsx_intake_app(
     worker_db = _restricted(worker_scope, socket, dbname, port, _WORKER)
     app.state.xlsx_worker_repository = _WorkerRepository(worker_db)
     app.state.xlsx_worker = XlsxIntakeDispatcher(store, app.state.xlsx_worker_repository)
+    administration = UploadAdmission(XLSX_UPLOAD) if enable_knowledge_administration else None
 
     @app.middleware('http')
     async def private(request: Request, call_next):
+        if administration and is_administration(request.scope['path']):
+            return await metadata_api.metadata_boundary(request, app, call_next, administration_upload=administration)
         if enable_metadata and metadata_api.is_metadata(request):
             return await metadata_api.metadata_boundary(request, app, call_next)
         cid = uuid4()
@@ -249,7 +256,7 @@ def create_staged_xlsx_intake_app(
             raise HTTPException(422, _INVALID)
         return await run_in_threadpool(submit, authority, node, key, body, digest, request.state.xlsx_correlation)
 
-    async def upload_with_metadata(request: Request):
+    async def classified_upload(request: Request, *, screen: bool):
         if _header(request, 'content-type', 415).lower() != _MEDIA:
             raise HTTPException(415, _INVALID)
         node = _header(request, 'x-node-id')
@@ -264,11 +271,21 @@ def create_staged_xlsx_intake_app(
         body, digest = await metadata_api.upload_body(request, MAX_INPUT_BYTES)
         if not body:
             raise HTTPException(422, _INVALID)
+        if screen and not plausible_xlsx(body):
+            raise HTTPException(415, _INVALID)
         return await run_in_threadpool(submit, authority, node, key, body, digest,
                                        request.state.metadata_correlation, metadata)
 
     if enable_metadata:
+        async def upload_with_metadata(request: Request):
+            return await classified_upload(request, screen=False)
+
         app.post(metadata_api.BASE + '/xlsx/uploads', status_code=202)(upload_with_metadata)
+
+    if enable_knowledge_administration:
+        @app.post(XLSX_UPLOAD, status_code=202)
+        async def administration_upload(request: Request):
+            return await classified_upload(request, screen=True)
 
     @app.get(PREFIX + '/{job_id}')
     async def status(request: Request, job_id: str):
