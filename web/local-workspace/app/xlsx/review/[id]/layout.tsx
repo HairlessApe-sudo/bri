@@ -1,0 +1,1 @@
+export { ReviewRouteLayout as default } from '../../../classification/review-mode-server';

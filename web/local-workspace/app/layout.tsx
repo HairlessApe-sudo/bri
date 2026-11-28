@@ -13,6 +13,7 @@ export default function Layout({ children }: Readonly<{ children: React.ReactNod
         <a href="/reports" className="nav-link"><span className="nav-index">05</span>Reports</a>
         <a href="/xlsx" className="nav-link"><span className="nav-index">06</span>XLSX intake</a>
         <a href="/knowledge/search" className="nav-link"><span className="nav-index">07</span>Knowledge Interface</a>
+        <a href="/classification" className="nav-link"><span className="nav-index">08</span>Classification catalogue</a>
       </nav>
     </aside>
     <main className="main-area"><div className="page-content">{children}</div></main>

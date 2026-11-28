@@ -3,6 +3,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { isXlsxId, parseXlsxProposal, xlsxReviewPath } from '../../../../xlsx-governance.mjs';
+import { InitialMetadataReview } from '../../../classification/initial-review';
 import { useEvidenceRefresh } from '../../../refresh';
 import { decisionAttempt } from '../../client.mjs';
 import { PageButtons, useXlsxRead, XlsxError } from '../../read';
@@ -84,7 +85,8 @@ function DecisionSnapshot({ data, refresh, cursor, visit, block }: { data: Propo
     <p><code>{data.id}</code> · {data.node_id} · {data.state}</p>
     <WorksheetView data={data} />
     <PageButtons cursor={cursor} next={data.next_cursor} visit={visit} noun="evidence" />
-    {data.state === 'proposed' && <section className="content-panel" aria-label="XLSX review decision">
+    {data.state === 'proposed' && <InitialMetadataReview format="xlsx" job={data.id} node={data.node_id} refresh={refresh} block={block}
+      legacy={<section className="content-panel" aria-label="XLSX review decision">
       <h2>Review decision</h2>
       <p>Approval validates this proposal. It does not publish it or grant access.</p>
       {choice ? <fieldset><legend>Record the decision for this proposal?</legend>
@@ -94,6 +96,6 @@ function DecisionSnapshot({ data, refresh, cursor, visit, block }: { data: Propo
         <button type="button" onClick={() => choose('approve')}>Approve…</button>{' '}
         <button type="button" onClick={() => choose('reject')}>Reject…</button>
       </>}
-    </section>}
+    </section>} />}
   </>;
 }

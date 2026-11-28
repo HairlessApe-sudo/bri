@@ -61,5 +61,13 @@ def verify_xlsx_catalog(db):
         raise RuntimeError('unsafe release XLSX routine configuration or grants')
     entry_points = {'xlsx_submit', 'xlsx_mark_ready', 'xlsx_status', 'xlsx_claim', 'xlsx_complete', 'xlsx_fail'}
     entry_points.update(name for routines in XLSX_GOVERNANCE_ROUTINES.values() for name in routines)
+    # These local-only metadata definers are owner-only in the release catalog.
+    # Keep them separate from the legacy fixture's granted governance routines.
+    entry_points.update({
+        'xlsx_submit_metadata_v1', 'xlsx_review_metadata_v1',
+        'xlsx_read_metadata_v1', 'xlsx_propose_metadata_correction_v1',
+        'xlsx_review_metadata_correction_v1', 'xlsx_review_metadata_detail_v1',
+        'xlsx_list_metadata_corrections_v1',
+    })
     if sorted(r[0] for r in routines if r[1]) != sorted(entry_points):
         raise RuntimeError('unexpected release XLSX definer entry points')

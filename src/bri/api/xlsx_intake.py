@@ -21,6 +21,7 @@ from bri.api.csv_intake import (
     _APP, _NODE, _UUID, Scope, _body, _command, _private_request, _restricted, _stage_socket, _staged_app,
 )
 from bri.api.database import DatabaseUnavailable
+from bri.api import knowledge_metadata as metadata_api
 from bri.ingestion.xlsx_strict import MAX_INPUT_BYTES
 from bri.ingestion.xlsx_intake import ClaimedXlsxJob, XlsxIntakeDispatcher
 
@@ -31,6 +32,8 @@ _WORKER = 'bri_xlsx_worker'
 _INVALID = 'Invalid XLSX intake request'
 _NOT_FOUND = 'XLSX job not found'
 _STATES = frozenset({'creating', 'ready', 'processing', 'proposed', 'failed'})
+_REASONS = frozenset({'unsupported_workbook', 'resource_limit', 'integrity_failure', 'processing_failed',
+                      'infrastructure_unavailable', 'authority_lost', 'lease_expired'})
 _SUBMIT = 'SELECT bri.xlsx_submit(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'
 _READY = 'SELECT bri.xlsx_mark_ready(%s,%s,%s,%s,%s,%s,%s)'
 _STATUS = 'SELECT bri.xlsx_status(%s,%s,%s,%s,%s,%s)'
@@ -138,6 +141,7 @@ class _WorkerRepository:
 def create_staged_xlsx_intake_app(
     *, identity_scope: Scope, submitter_scope: Scope, worker_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, store: _Quarantine, dbname: str = 'postgres', port: int = 5432,
+    enable_metadata: bool = False,
 ) -> FastAPI:
     """Compose a private listener from distinct, injected disposable DB scopes.
 
@@ -157,6 +161,8 @@ def create_staged_xlsx_intake_app(
 
     @app.middleware('http')
     async def private(request: Request, call_next):
+        if enable_metadata and metadata_api.is_metadata(request):
+            return await metadata_api.metadata_boundary(request, app, call_next)
         cid = uuid4()
         request.state.xlsx_correlation = cid
         try:
@@ -193,16 +199,32 @@ def create_staged_xlsx_intake_app(
         response.headers.update({'Cache-Control': 'private, no-store', 'X-Request-ID': str(cid)})
         return response
 
-    def submit(authority, node, key, body, digest, cid):
+    def validate_metadata_receipt(data, *, reserve):
+        keys = {'job_id', 'state', 'reason'} | ({'artifact_key'} if reserve else set())
+        if (type(data) is not dict or data.keys() != keys or
+                (data['reason'] is not None and data['reason'] not in _REASONS) or
+                (data['state'] == 'failed' and data['reason'] is None)):
+            raise DatabaseUnavailable('Unexpected XLSX metadata reservation')
+        metadata_api.uuid_exact(data['job_id'])
+        if reserve:
+            metadata_api.uuid_exact(data['artifact_key'])
+
+    def submit(authority, node, key, body, digest, cid, metadata=None):
         args = _authority_args(authority)
-        data = _json(_command(submitter_db, _SUBMITTER, _SUBMIT,
-                              (*args, node, key, len(body), digest, cid), authority=authority))
+        params = (*args, node, key, len(body), digest, cid)
+        if metadata is None:
+            data = _json(_command(submitter_db, _SUBMITTER, _SUBMIT, params, authority=authority))
+        else:
+            data = metadata_api.call(submitter_db, _SUBMITTER, 'xlsx_submit_metadata_v1', (*params, metadata), authority)
+            validate_metadata_receipt(data, reserve=True)
         if not data.get('job_id'):
             raise HTTPException(403, 'XLSX intake denied')
         job, state = _receipt(data)
         if state == 'creating':
             store.install(authority.tenant, job, str(_identifier(data.get('artifact_key'))), body)
             ready = _json(_command(submitter_db, _SUBMITTER, _READY, (*args, job, cid), authority=authority))
+            if metadata is not None:
+                validate_metadata_receipt(ready, reserve=False)
             if not ready.get('job_id'):
                 raise HTTPException(403, 'XLSX intake denied')
             _, state = _receipt(ready, job)
@@ -226,6 +248,27 @@ def create_staged_xlsx_intake_app(
         if not body:
             raise HTTPException(422, _INVALID)
         return await run_in_threadpool(submit, authority, node, key, body, digest, request.state.xlsx_correlation)
+
+    async def upload_with_metadata(request: Request):
+        if _header(request, 'content-type', 415).lower() != _MEDIA:
+            raise HTTPException(415, _INVALID)
+        node = _header(request, 'x-node-id')
+        try:
+            key = metadata_api.uuid_exact(_header(request, 'idempotency-key'))
+            if not _NODE.fullmatch(node):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, _INVALID) from None
+        metadata = metadata_api.upload_metadata(request)
+        authority = await authorize(request, 'source:submit', node)
+        body, digest = await metadata_api.upload_body(request, MAX_INPUT_BYTES)
+        if not body:
+            raise HTTPException(422, _INVALID)
+        return await run_in_threadpool(submit, authority, node, key, body, digest,
+                                       request.state.metadata_correlation, metadata)
+
+    if enable_metadata:
+        app.post(metadata_api.BASE + '/xlsx/uploads', status_code=202)(upload_with_metadata)
 
     @app.get(PREFIX + '/{job_id}')
     async def status(request: Request, job_id: str):

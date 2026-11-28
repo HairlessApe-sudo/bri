@@ -3,6 +3,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { PageHeading, StateMessage, useRemote } from '@/components/data-state';
+import { InitialMetadataReview } from '../../classification/initial-review';
 import { apiBase, useEvidenceRefresh } from '../../refresh';
 import { parseDecision, parseDetail, proposalFromSegment, reviewResource } from '../../../review-contract.mjs';
 import { ReviewConfirmation, ReviewDetailView, ReviewError, type Detail, type ReviewDecision } from '../views';
@@ -77,5 +78,6 @@ function DecisionSnapshot({ data, path, offset, refresh, pagination }: {
   if (result === 401 || result === 403 || result === 404) return <ReviewError error={Object.assign(new Error(), { status: result })} />;
   if (result !== null) return <p role="alert">The decision could not be confirmed. Refresh the proposal before taking further action.</p>;
   return <ReviewDetailView data={data} offset={offset} pagination={pagination}
-    actions={<ReviewConfirmation choice={choice} choose={choose} submit={submit} />} />;
+    actions={<InitialMetadataReview format="csv" job={data.id} node={data.node_id} refresh={refresh} block={setResult}
+      legacy={<ReviewConfirmation choice={choice} choose={choose} submit={submit} />} />} />;
 }

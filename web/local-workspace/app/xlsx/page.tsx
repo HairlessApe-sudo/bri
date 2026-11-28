@@ -3,14 +3,26 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useEvidenceRefresh } from '../refresh';
 import { IntakeForms } from './intake-forms';
+import { ClassifiedIntake } from './classified-intake';
 import { readJob, uploadWorkbook } from './client.mjs';
 
 export default function XlsxIntakePage() {
   const { parked, refreshKey } = useEvidenceRefresh();
-  return parked ? null : <Intake key={refreshKey} />;
+  return parked ? null : <Intake refreshKey={refreshKey} />;
 }
 
-function Intake() {
+function Intake({ refreshKey }: { refreshKey: number }) {
+  return <>
+    <h1>XLSX intake</h1>
+    <p>Upload a local synthetic workbook, or check the status of a previous submission.</p>
+    <ul><li><a href="/xlsx/review">XLSX review queue</a></li>
+      <li><a href="/xlsx/knowledge">Published XLSX records</a></li></ul>
+    <ClassifiedIntake refreshKey={refreshKey} />
+    <LegacyIntake key={refreshKey} />
+  </>;
+}
+
+function LegacyIntake() {
   const lifetime = useRef<AbortController | null>(null);
   const busy = useRef(false);
   const [pending, setPending] = useState(false);
@@ -41,10 +53,6 @@ function Intake() {
   }
 
   return <>
-    <h1>XLSX intake</h1>
-    <p>Upload a local synthetic workbook, or check the status of a previous submission.</p>
-    <ul><li><a href="/xlsx/review">XLSX review queue</a></li>
-      <li><a href="/xlsx/knowledge">Published XLSX records</a></li></ul>
     <IntakeForms disabled={pending} onUpload={(file, node) => void run(
       (signal) => uploadWorkbook(fetch, file, node, crypto.randomUUID(), signal), true,
     )} onStatus={(id) => void run((signal) => readJob(fetch, id, signal))} />

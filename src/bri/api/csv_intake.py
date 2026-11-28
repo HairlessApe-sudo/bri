@@ -103,7 +103,8 @@ class _Authority:
         return self.tenant, self.actor, self.sid, self.issuer
 
 
-def _private_request(request: Request, app: FastAPI, *, guarded_routes: bool = False) -> None:
+def _private_request(request: Request, app: FastAPI, *, guarded_routes: bool = False,
+                     metadata_upload: bool = False) -> None:
     hosts = request.headers.getlist('host')
     server = request.scope.get('server')
     try:
@@ -129,7 +130,8 @@ def _private_request(request: Request, app: FastAPI, *, guarded_routes: bool = F
                        and len(query) == 1 and query[0][0] == 'q')) or any(
         h in {'tenant', 'tenant-id', 'actor', 'actor-id', 'principal', 'principal-id', 'role',
               'session-id', 'auth-user-id', 'issuer', 'cookie'}
-        or (h.startswith('x-') and (guarded_routes or h != 'x-node-id'))
+        or (h.startswith('x-') and (guarded_routes or h != 'x-node-id')
+            and not (metadata_upload and h == 'x-bri-metadata'))
         for h in request.headers
     ):
         raise HTTPException(400, 'Authority is server-controlled')
@@ -341,11 +343,14 @@ def _stage_socket(private_socket: Path, auth_transport: httpx.MockTransport, *sc
     return socket
 
 
-_Authorize = Callable[[Request, str, str | None], Awaitable[_Authority]]
+_Authorize = Callable[[Request, str | None, str | None], Awaitable[_Authority]]
 
 
 def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, reader_only: bool = False,
-                private_guard: Callable[[Request], None] | None = None):
+                private_guard: Callable[[Request], None] | None = None,
+                enable_metadata: bool = False, metadata_identity_only: bool = False):
+    from bri.api.knowledge_metadata import is_metadata, metadata_boundary
+
     class IdentityDatabase(Database):
         @contextmanager
         def _connect(self):
@@ -361,6 +366,8 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
 
     @app.middleware('http')
     async def private(request: Request, call_next):
+        if enable_metadata and is_metadata(request):
+            return await metadata_boundary(request, app, call_next)
         cid = uuid4()
         request.state.csv_correlation = cid
         try:
@@ -382,10 +389,18 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
         response.headers.update({'Cache-Control': cache, 'X-Request-ID': str(cid)})
         return response
 
-    def resolve(ident, action: str, node: str | None):
+    def resolve(ident, action: str | None, node: str | None):
         principal = registry.resolve_authenticated_principal(ident.auth_user_id, ident.issuer, ident.auth_user_id)
         if principal is not None and not principal.platform_superadmin and len(principal.tenant_ids) == 1:
             tenant = next(iter(principal.tenant_ids))
+            # The new catalogue RPCs enforce the live permissions themselves.
+            # This mode is unavailable on other assemblies; never infer grants
+            # from a role label or accept identity supplied by the caller.
+            if action is None:
+                if metadata_identity_only and registry.auth_session_is_active(ident.auth_user_id, ident.session_id):
+                    return _Authority(tenant, UUID(principal.subject_id), UUID(ident.session_id),
+                                      ident.issuer, ident.auth_user_id, principal)
+                raise HTTPException(403, 'Current authorized BRI session required')
             role = dict(principal.role_bindings).get(tenant)
             matching_grant = (is_authorized(principal, action, Resource(tenant, node)) if node is not None else
                               any(g.tenant_id == tenant and g.action == action and g.scope_id
@@ -396,7 +411,7 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
                                   ident.issuer, ident.auth_user_id, principal)
         raise HTTPException(403, 'Current authorized BRI session required')
 
-    async def authorize(request: Request, action: str, node: str | None = None):
+    async def authorize(request: Request, action: str | None, node: str | None = None):
         auth = request.headers.getlist('authorization')
         if len(auth) != 1 or not re.fullmatch(r'Bearer [^\s]{1,16384}', auth[0]):
             raise HTTPException(401, 'Verified bearer identity required')
@@ -416,7 +431,7 @@ def _staged_app(identity_db: Scope, auth_transport: httpx.MockTransport, *, read
 def create_staged_csv_intake_app(
     *, identity_scope: Scope, intake_scope: Scope, worker_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, store: LocalCsvQuarantine, dbname: str = 'postgres', port: int = 5432,
-    reader_scope: Scope | None = None,
+    reader_scope: Scope | None = None, enable_metadata: bool = False,
 ) -> FastAPI:
     """Assemble with distinct disposable scopes and private storage.
 
@@ -426,25 +441,39 @@ def create_staged_csv_intake_app(
     a review decision does not grant publication access. An optional fourth
     scope serves governed published reads only on this private listener.
     """
+    from bri.api import knowledge_metadata as metadata_api
+
     scopes = (identity_scope, intake_scope, worker_scope) + ((reader_scope,) if reader_scope is not None else ())
     socket = _stage_socket(private_socket, auth_transport, *scopes)
     identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
     intake_db = _restricted(intake_scope, socket, dbname, port, _INTAKE)
     worker_db = _restricted(worker_scope, socket, dbname, port, _WORKER)
     reader_db = _restricted(reader_scope, socket, dbname, port, _READER) if reader_scope is not None else None
-    app, authorize = _staged_app(identity_db, auth_transport)
+    app, authorize = _staged_app(identity_db, auth_transport, enable_metadata=enable_metadata)
     app.state.csv_worker = _Worker(CsvIntakeProcessor(store, _WorkerRepo(worker_db)))
 
-    def submit(authority, node, key, body, digest, cid):
-        row = _command(intake_db, _INTAKE, _SUBMIT,
-                       (*authority.args, node, key, digest, len(body), cid), authority=authority)
-        if not row or not row[0]:
-            raise HTTPException(403, 'CSV intake denied')
-        job, state, object_key = row
+    def submit(authority, node, key, body, digest, cid, metadata=None):
+        args = (*authority.args, node, key, digest, len(body), cid)
+        if metadata is None:
+            row = _command(intake_db, _INTAKE, _SUBMIT, args, authority=authority)
+            if not row or not row[0]:
+                raise HTTPException(403, 'CSV intake denied')
+            job, state, object_key = row
+        else:
+            receipt = metadata_api.call(intake_db, _INTAKE, 'csv_submit_metadata_v1', (*args, metadata), authority)
+            if type(receipt) is not dict or receipt.keys() != {'job_id', 'state', 'object_key'}:
+                raise DatabaseUnavailable('Unexpected CSV metadata reservation')
+            job, object_key = map(metadata_api.uuid_exact, (receipt['job_id'], receipt['object_key']))
+            state = receipt['state']
+            if not isinstance(state, str):
+                raise DatabaseUnavailable('Unexpected CSV metadata reservation')
+            _job_state((state,))
         if state == 'creating':
             store.install(authority.tenant, str(object_key), body)
             state = _job_state(_command(intake_db, _INTAKE, _READY, (*authority.args, job, cid),
                                         authority=authority))
+            if metadata is not None and state == 'creating':
+                raise DatabaseUnavailable('CSV metadata reservation was not acknowledged')
         return {'id': str(job), 'state': _job_state((state,))}
 
     @app.post(PREFIX, status_code=202)
@@ -460,6 +489,27 @@ def create_staged_csv_intake_app(
         if not body:
             raise HTTPException(422, _INVALID)
         return await run_in_threadpool(submit, authority, node, key, body, digest, request.state.csv_correlation)
+
+    async def upload_with_metadata(request: Request):
+        if not _MEDIA.fullmatch(_header(request, 'content-type', status=415).strip()):
+            raise HTTPException(415, _INVALID)
+        node = _header(request, 'x-node-id')
+        try:
+            key = metadata_api.uuid_exact(_header(request, 'idempotency-key'))
+            if not _NODE.fullmatch(node):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, _INVALID) from None
+        metadata = metadata_api.upload_metadata(request)
+        authority = await authorize(request, 'source:submit', node)
+        body, digest = await metadata_api.upload_body(request, MAX_CSV_BYTES)
+        if not body:
+            raise HTTPException(422, _INVALID)
+        return await run_in_threadpool(submit, authority, node, key, body, digest,
+                                       request.state.metadata_correlation, metadata)
+
+    if enable_metadata:
+        app.post(metadata_api.BASE + '/csv/uploads', status_code=202)(upload_with_metadata)
 
     @app.get(PREFIX + '/{job_id}')
     async def status(request: Request, job_id: str):
@@ -504,19 +554,23 @@ def create_staged_csv_intake_app(
 
 def create_staged_csv_reader_app(
     *, identity_scope: Scope, reader_scope: Scope, private_socket: Path,
-    auth_transport: httpx.MockTransport, dbname: str = 'postgres', port: int = 5432,
+    auth_transport: httpx.MockTransport, dbname: str = 'postgres', port: int = 5432, enable_metadata: bool = False,
 ) -> FastAPI:
     """Assemble the isolated reader with native identity and authorized published reads.
 
     Serve directly on loopback with proxy headers and access logs disabled.
     No intake or worker connection, quarantine store, or release route is mounted.
     """
+    from bri.api.knowledge_metadata import mount_records
+
     socket = _stage_socket(private_socket, auth_transport, identity_scope, reader_scope)
     identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
     reader_db = _restricted(reader_scope, socket, dbname, port, _READER)
-    app, authorize = _staged_app(identity_db, auth_transport, reader_only=True)
+    app, authorize = _staged_app(identity_db, auth_transport, reader_only=True, enable_metadata=enable_metadata)
     _mount_reads(app, authorize, reader_db, a13=True)
     _mount_reporting(app, authorize, reader_db)
+    if enable_metadata:
+        mount_records(app, authorize, reader_db, _READER, 'csv')
     return app
 
 

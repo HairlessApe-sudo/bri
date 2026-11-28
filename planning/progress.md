@@ -1,7 +1,13 @@
 # BRI Project Progress
 
-Last updated: 2026-11-27
+Last updated: 2026-11-28
 Stage: 3 — platform foundation MVP, synthetic development implementation
+
+## A19.1-AM2 — governed classification accepted for local synthetic scope only
+
+- Independent review `deleg_7aa45e11` closed both findings from held tree `408d7b20712f3b2940a1b0a60086b90dc3252b28` and accepted exact implementation tree `7dc8f99f51e1af35a43a184ab3a8b6a5a3b332d9`. The default-off local workspace again supports authorized native CSV and XLSX reviews; the protected database still rejects classified native approval without validated metadata. New correction decisions require a current revision for either action; authorized exact replay is unchanged.
+- Qualified on PostgreSQL 16.2: 797 backend and 225 frontend tests, zero skips, 40 migration checksums and a no-op replay, 79 migrator-owned FORCE RLS application tables, signed Chromium in both modes, both TypeScript targets and offline release exclusion. Evidence and the preserved original HOLD are indexed in the [classification closeout](../architecture/a19-1-governed-classification.md#am2-closeout).
+- Synthetic grant provisioning still uses the approved fixture rather than the customer delegation API. No real-data, hosted, deployment, production or A19.2 authority. A17 remains deferred; separate A15/A18.1/A18.2 gates, A20 deployment-readiness work and the PostgreSQL 16.16 CSV reservation discrepancy remain open. No additional residual risk was accepted.
 
 ## A18.3-R2 — integrated demonstration accepted for local synthetic scope only
 

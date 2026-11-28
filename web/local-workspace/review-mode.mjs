@@ -1,0 +1,1 @@
+export const reviewModeHeader = 'x-bri-local-review-mode';

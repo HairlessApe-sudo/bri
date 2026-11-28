@@ -7,6 +7,8 @@ import { intakeTarget, forwardIntake, governanceTarget, forwardGovernance } from
 import { isXlsxPagePath } from './xlsx-governance.mjs';
 import { parseReport, reportMaxBytes, reportPath, reportScope, reportTarget } from './reporting.mjs';
 import { unifiedTarget, forwardUnified } from './unified-bridge.mjs';
+import { metadataTarget, forwardMetadata, denyMetadata } from './metadata-bridge.mjs';
+import { reviewModeHeader } from './review-mode.mjs';
 
 export const LOCAL_HOST = '127.0.0.2';
 export const LOCAL_PORT = 3013;
@@ -134,8 +136,23 @@ async function verifiedBearer(req) {
     && typeof claims.session_id === 'string' && uuid.test(claims.session_id)) return token;
 }
 
-export function composeLocalWorkspace(nextHandler) {
+export function composeLocalWorkspace(handleNextRequest) {
   if (process.env.NODE_ENV !== 'development') throw new Error('Local workspace requires development mode');
+  const setting = process.env.BRI_LOCAL_METADATA_ENABLED;
+  if (setting !== undefined && setting !== '0' && setting !== '1') {
+    throw new Error('BRI_LOCAL_METADATA_ENABLED must be unset, 0, or 1');
+  }
+  const reviewMode = setting === '1' ? 'enabled' : 'disabled';
+  const nextHandler = (req, res) => {
+    // This is an internal handoff, never a browser-supplied switch. Replace it even on
+    // non-review dispatches so a Next-normalized route cannot inherit a client value.
+    req.headers[reviewModeHeader] = reviewMode;
+    for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
+      if (req.rawHeaders[i].toLowerCase() === reviewModeHeader) req.rawHeaders.splice(i, 2);
+    }
+    req.rawHeaders.push(reviewModeHeader, reviewMode);
+    return handleNextRequest(req, res);
+  };
   return async (req, res) => {
     if (!isPrivateWorkspaceRequest(req)) return deny(res, 403);
     const target = req.url ?? '';
@@ -149,6 +166,12 @@ export function composeLocalWorkspace(nextHandler) {
         if (query !== undefined) return deny(res, 404);
         if (req.method !== 'GET' && req.method !== 'HEAD') return deny(res, 405);
         res.setHeader('cache-control', 'no-store');
+        return nextHandler(req, res);
+      }
+      if (path === '/classification') {
+        if (query !== undefined) return denyMetadata(res, 404);
+        if (req.method !== 'GET' && req.method !== 'HEAD') return denyMetadata(res, 405);
+        res.setHeader('cache-control', 'private, no-store');
         return nextHandler(req, res);
       }
       if (path === '/reports') {
@@ -166,6 +189,11 @@ export function composeLocalWorkspace(nextHandler) {
       }
       return deny(res, 404);
     }
+    const metadata = metadataTarget(path.slice(PREFIX.length), req.method, query);
+    if (typeof metadata === 'number') return denyMetadata(res, metadata);
+    if (metadata) return forwardMetadata(req, res, metadata, {
+      browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest,
+    });
     const unified = unifiedTarget(path.slice(PREFIX.length), req.method, query);
     if (typeof unified === 'number') return deny(res, unified);
     if (unified) return forwardUnified(req, res, unified, {
@@ -173,6 +201,8 @@ export function composeLocalWorkspace(nextHandler) {
     });
     const xlsxIntake = intakeTarget(path.slice(PREFIX.length), req.method, query);
     if (typeof xlsxIntake === 'number') return deny(res, xlsxIntake);
+    // Never silently strip a classification envelope and create a legacy job.
+    if (xlsxIntake?.upload && Object.hasOwn(req.headers, 'x-bri-metadata')) return deny(res, 400);
     if (xlsxIntake) return forwardIntake(req, res, xlsxIntake, {
       browserAuthority, origin: `http://${HOST}`, verifiedBearer, loopbackRequest, send, deny,
     });

@@ -15,6 +15,7 @@ from bri.api.csv_intake import (
     _stage_socket, _staged_app,
 )
 from bri.api.database import DatabaseUnavailable
+from bri.api.knowledge_metadata import mount_review
 from bri.ingestion.csv_intake import MAX_EXTRACTED_BYTES
 
 _QUEUE = 'SELECT bri.csv_review_queue(%s,%s,%s,%s,%s,%s,%s,%s)'
@@ -82,13 +83,13 @@ def _read_args(authority: _Authority) -> tuple:
 
 def create_staged_csv_review_app(
     *, identity_scope: Scope, review_scope: Scope, private_socket: Path, auth_transport: httpx.MockTransport,
-    dbname: str = 'postgres', port: int = 5432,
+    dbname: str = 'postgres', port: int = 5432, enable_metadata: bool = False,
 ) -> FastAPI:
     """Serve on the private IP loopback listener (:8114), without proxy headers or access logs."""
     socket = _stage_socket(private_socket, auth_transport, identity_scope, review_scope)
     identity_db = _restricted(identity_scope, socket, dbname, port, _APP)
     review_db = _restricted(review_scope, socket, dbname, port, _INTAKE)
-    app, authorize = _staged_app(identity_db, auth_transport, private_guard=_guard)
+    app, authorize = _staged_app(identity_db, auth_transport, private_guard=_guard, enable_metadata=enable_metadata)
 
     @app.get(REVIEW_PREFIX)
     async def queue(request: Request):
@@ -134,4 +135,6 @@ def create_staged_csv_review_app(
             raise DatabaseUnavailable('Unexpected CSV decision result')
         return {'id': item_id, 'decision': decision}
 
+    if enable_metadata:
+        mount_review(app, authorize, review_db, _INTAKE, 'csv')
     return app

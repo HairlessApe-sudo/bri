@@ -285,6 +285,26 @@ test('private HTTP bridge uses a verified SSR cookie and preserves backend decis
     const wrong = await get(statusPath, { cookie });
     assert.equal(wrong.status, 502);
     assert.doesNotMatch(wrong.body, /never expose/);
+
+    const classified = '/v1/knowledge-metadata/xlsx/uploads';
+    const metadata = { version: 1, primary_classification_id: 'policy', title: 'Fixture',
+      additional_classification_ids: [], description: null, effective_date: null, review_date: null, expiry_date: null };
+    const envelope = Buffer.from(JSON.stringify(metadata)).toString('base64url');
+    const classifiedPost = (path, fields) => get(`/api/bri-local${path}`, { ...headers, ...fields }, 'POST', '127.0.0.1', workbook);
+    const earlier = seen.length;
+    extra = {};
+    assert.equal((await classifiedPost(classified, { 'x-bri-metadata': envelope + '=' })).status, 422);
+    assert.equal((await classifiedPost(classified, { 'x-bri-metadata': envelope, cookie: forgedCookie })).status, 401);
+    assert.equal((await classifiedPost(base, { 'x-bri-metadata': envelope })).status, 400);
+    assert.equal(seen.length, earlier);
+    const sent = await classifiedPost(classified, { 'x-bri-metadata': envelope });
+    assert.equal(sent.status, 202);
+    assert.equal(sent.headers['cache-control'], 'private, no-store');
+    assert.deepEqual(JSON.parse(sent.body), { id: job, state: 'ready' });
+    assert.equal(seen.at(-1).path, classified);
+    assert.equal(seen.at(-1).headers['x-bri-metadata'], envelope);
+    assert.equal(seen.at(-1).headers.cookie, undefined);
+    assert.deepEqual(seen.at(-1).body, workbook);
   });
 
   await t.test('XLSX governance queue is signed, bounded, and never forwards maintenance targets', async () => {
@@ -391,6 +411,38 @@ test('private HTTP bridge uses a verified SSR cookie and preserves backend decis
       assert.equal(oversized.status, 503);
       assert.equal(oversized.body, '{"detail":"Local workspace read unavailable."}');
     }
+  });
+
+  await t.test('metadata requires a verified cookie and forwards only the exact protected projection', async () => {
+    const record = id.slice(4);
+    const version = 'e50d72bc-5fa2-4891-b69b-c68225911a57';
+    const path = `/knowledge-metadata/csv/records/${record}/versions/${version}`;
+    const url = prefix + path;
+    const exact = { record_id: record, source_version_id: version, metadata: null };
+    responseBody = JSON.stringify(exact);
+    const start = reads.length;
+    for (const [target, headers, method, status] of [
+      [url, {}, 'GET', 401], [url, { cookie: forgedCookie }, 'GET', 401],
+      [url, { cookie, 'x-bri-actor-id': uid }, 'GET', 400], [url + '/', { cookie }, 'GET', 404],
+      [url + '?tenant=foreign', { cookie }, 'GET', 400], [url, { cookie }, 'POST', 405],
+      [prefix + '/knowledge-metadata/csv/uploads', { cookie }, 'POST', 404],
+    ]) {
+      assert.equal((await get(target, headers, method)).status, status, target);
+    }
+    assert.equal(reads.length, start);
+    const response = await get(url, { cookie, 'x-extra-browser-data': 'do-not-forward' });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['cache-control'], 'private, no-store');
+    assert.equal(response.headers['set-cookie'], undefined);
+    assert.equal(response.headers.location, undefined);
+    assert.deepEqual(JSON.parse(response.body), exact);
+    assert.deepEqual(reads.at(-1).headers, { authorization: ['Bearer', token].join(' '), accept: 'application/json',
+      host: '127.0.0.1:8013', connection: reads.at(-1).headers.connection });
+    assert.equal(reads.at(-1).path, '/v1' + path);
+    responseBody = JSON.stringify({ ...exact, source_version_id: record, actor_id: 'private-diagnostic' });
+    const malformed = await get(url, { cookie });
+    assert.equal(malformed.status, 502);
+    assert.doesNotMatch(malformed.body, /private-diagnostic/);
   });
   process.env.NODE_ENV = 'production';
   assert.throws(() => composeLocalWorkspace(() => {}), /development/);

@@ -20,7 +20,7 @@ export function IntakeForms({ onUpload, onStatus, disabled }: {
   return <>
     <form className="content-panel" onSubmit={upload}>
       <fieldset disabled={disabled}>
-        <legend>Submit a synthetic workbook</legend>
+        <legend>Submit a legacy unclassified workbook</legend>
         <p><label>Node ID <input name="node" required maxLength={128} autoComplete="off" /></label></p>
         <p><label>Workbook <input name="workbook" type="file" accept=".xlsx" required /></label></p>
         <button type="submit">Upload workbook</button>

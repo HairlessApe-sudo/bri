@@ -23,6 +23,7 @@ from bri.api.csv_intake import (
     Scope, _APP, _NODE, _command, _private_request, _restricted, _stage_socket, _staged_app,
 )
 from bri.api.database import DatabaseUnavailable
+from bri.api import knowledge_metadata as metadata_api
 from bri.api.xlsx_intake import _authority_args, _header, _identifier, _json, _upload_body
 from bri.ingestion.xlsx_strict import _BAD_TITLE, _SHEET_ID, _valid_rows
 
@@ -165,7 +166,7 @@ def _page(data, start: int, scope, cursors: _Cursors, result: dict) -> JSONRespo
 def create_staged_xlsx_governance_app(
     *, identity_scope: Scope, review_scope: Scope, private_socket: Path,
     auth_transport: httpx.MockTransport, dbname: str = 'postgres', port: int = 5432,
-    reader_scope: Scope | None = None,
+    reader_scope: Scope | None = None, enable_metadata: bool = False,
 ) -> FastAPI:
     scopes = (identity_scope, review_scope) + ((reader_scope,) if reader_scope is not None else ())
     socket = _stage_socket(private_socket, auth_transport, *scopes)
@@ -177,6 +178,8 @@ def create_staged_xlsx_governance_app(
 
     @app.middleware('http')
     async def private(request: Request, call_next):
+        if enable_metadata and metadata_api.is_metadata(request):
+            return await metadata_api.metadata_boundary(request, app, call_next)
         cid = uuid4()
         request.state.xlsx_correlation = cid
         try:
@@ -199,6 +202,10 @@ def create_staged_xlsx_governance_app(
         return response
 
     cursors = _Cursors()
+    if enable_metadata:
+        metadata_api.mount_review(app, authorize, review_db, _REVIEWER, 'xlsx')
+        if reader_db is not None:
+            metadata_api.mount_records(app, authorize, reader_db, _READER, 'xlsx')
 
     @app.get(REVIEW_PREFIX)
     async def queue(request: Request):

@@ -6,6 +6,8 @@ if (process.env.NODE_ENV && process.env.NODE_ENV !== 'development') throw new Er
 process.env.NODE_ENV = 'development';
 process.env.NEXT_TELEMETRY_DISABLED = '1';
 
+// Snapshot and validate the launcher setting before Next can load its own environment files.
+const handler = composeLocalWorkspace((req, res) => nextHandler(req, res));
 const { default: next } = await import('next');
 const nextUpgrades = createServer();
 const app = next({
@@ -14,7 +16,7 @@ const app = next({
   httpServer: nextUpgrades,
 });
 await app.prepare();
-const handler = composeLocalWorkspace(app.getRequestHandler());
+const nextHandler = app.getRequestHandler();
 const server = createServer((req, res) => {
   void handler(req, res).catch(() => {
     if (res.headersSent) res.destroy();
